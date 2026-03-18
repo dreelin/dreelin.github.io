@@ -255,6 +255,35 @@
       white-space: pre-wrap;
     }
 
+    .team-link {
+      color: var(--accent);
+      text-decoration: none;
+      border-bottom: 1px dashed var(--accent);
+    }
+
+    .team-link:hover {
+      border-bottom-style: solid;
+    }
+
+    .source-flag {
+      display: inline-block;
+      font-size: 0.72rem;
+      padding: 1px 5px;
+      border-radius: 5px;
+      margin-left: 4px;
+      vertical-align: middle;
+    }
+
+    .flag-sharp-only {
+      background: #dbeafe;
+      color: #1e40af;
+    }
+
+    .flag-kalshi-only {
+      background: #fef3c7;
+      color: #92400e;
+    }
+
     @media (max-width: 640px) {
       body {
         padding: 12px;
@@ -275,23 +304,27 @@
         Dynamic sizing for a winner-take-all board. Enter your true probabilities, market NO prices, and filled NO shares.
         The calculator recomputes incremental full Kelly and your Kelly fraction (for example, quarter Kelly) for each next fill.
       </p>
-      <div class="meta">
-        <label>
-          Kalshi Market (URL or event ticker)
-          <input id="kalshiInput" type="text" placeholder="https://kalshi.com/events/.../KX... or KX..." />
-        </label>
-        <div style="grid-column: 1 / -1; margin-top: 4px; display: grid; gap: 8px;">
-          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <button id="fetchBtn" type="button" class="btn-primary" style="white-space:nowrap;">Fetch from Kalshi</button>
-            <code id="kalshiApiLink" style="font-family:monospace; background:#f5f0e8; padding:3px 8px; border-radius:6px; word-break:break-all; font-size:0.82rem; flex:1; min-width:200px;"></code>
-            <button id="openUrlBtn" type="button" class="btn-warm" style="white-space:nowrap;">Open in New Tab</button>
-          </div>
-          <div id="manualPasteSection" style="display:none; gap:8px;">
-            <div style="font-size:0.9rem; color:var(--muted);">Auto-fetch failed. Open the link above, copy all (Ctrl+A, Ctrl+C), paste below:</div>
-            <textarea id="jsonPasteArea" rows="3" style="width:100%; font-family:monospace; font-size:0.82rem; border:1px solid var(--line); border-radius:10px; padding:8px; resize:vertical;" placeholder="Paste the full API JSON response here..."></textarea>
-            <div><button id="parseJsonBtn" type="button" class="btn-primary">Load From Pasted JSON</button></div>
-          </div>
+
+      <div style="margin-top:14px;">
+        <h2 style="margin-bottom:6px;">1. Sharp Odds</h2>
+        <p style="margin-bottom:8px; font-size:0.88rem;">Paste American odds from Pinnacle or other sharps. Formats: &quot;Duke +450&quot; or &quot;+450 Duke&quot; per line. Tabs, commas, pipes also work.</p>
+        <textarea id="sharpPasteArea" rows="5" style="width:100%; font-family:monospace; font-size:0.85rem; border:1px solid var(--line); border-radius:10px; padding:8px; resize:vertical;" placeholder="Duke +450&#10;Houston +550&#10;UConn +700&#10;Field -150"></textarea>
+        <div class="btn-row" style="margin-top:6px;">
+          <button id="devigBtn" type="button" class="btn-primary">Devig &amp; Load</button>
+          <span id="devigStatus" style="font-size:0.88rem; color:var(--muted); align-self:center;"></span>
         </div>
+      </div>
+
+      <div style="margin-top:14px;">
+        <h2 style="margin-bottom:6px;">2. Kalshi Prices</h2>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">
+          <input id="kalshiInput" type="text" placeholder="Kalshi URL or event ticker" style="flex:1; min-width:200px;" />
+          <button id="openUrlBtn" type="button" class="btn-warm" style="white-space:nowrap;">Open in New Tab</button>
+        </div>
+        <textarea id="jsonPasteArea" rows="3" style="width:100%; font-family:monospace; font-size:0.82rem; border:1px solid var(--line); border-radius:10px; padding:8px; resize:vertical;" placeholder="Paste Kalshi API JSON here &mdash; auto-loads on paste..."></textarea>
+      </div>
+
+      <div class="meta">
         <label>
           Bankroll (W0)
           <input id="bankroll" type="number" min="0.01" step="0.01" value="10000" />
@@ -392,6 +425,12 @@ Then apply your fraction f:
     const bankrollEl = document.getElementById("bankroll");
     const kellyFractionEl = document.getElementById("kellyFraction");
     const probModeEl = document.getElementById("probMode");
+    const sharpPasteEl = document.getElementById("sharpPasteArea");
+    const jsonPasteEl = document.getElementById("jsonPasteArea");
+    const devigStatusEl = document.getElementById("devigStatus");
+
+    /* Global state: devigger results keyed by team name */
+    let deviggerUrls = {}; // team → devigger URL string
 
     document.getElementById("addRowBtn").addEventListener("click", () => {
       addRow({ team: "", probPct: "", noPrice: "", shares: "0" });
@@ -413,10 +452,19 @@ Then apply your fraction f:
     });
 
     document.getElementById("recalcBtn").addEventListener("click", recalculate);
-    kalshiInputEl.addEventListener("input", updateApiLink);
-    document.getElementById("parseJsonBtn").addEventListener("click", parsePastedJson);
     document.getElementById("openUrlBtn").addEventListener("click", openApiUrl);
-    document.getElementById("fetchBtn").addEventListener("click", fetchKalshi);
+    document.getElementById("devigBtn").addEventListener("click", devigAndLoad);
+
+    /* Auto-parse Kalshi JSON on paste / input */
+    jsonPasteEl.addEventListener("input", () => {
+      const raw = jsonPasteEl.value.trim();
+      if (!raw) return;
+      let payload;
+      try { payload = JSON.parse(raw); }
+      catch (_e) { return; /* not valid JSON yet, wait for more input */ }
+      try { populateFromKalshi(payload); }
+      catch (err) { setStatus(`Failed to load Kalshi JSON: ${err.message}`, "error"); }
+    });
 
     function getApiUrl() {
       const ticker = extractEventTicker(kalshiInputEl.value);
@@ -425,54 +473,304 @@ Then apply your fraction f:
         : null;
     }
 
-    function updateApiLink() {
-      const el = document.getElementById("kalshiApiLink");
-      const url = getApiUrl();
-      el.textContent = url || "Enter a ticker or URL above first.";
-    }
-    updateApiLink();
-
     function openApiUrl() {
       const url = getApiUrl();
       if (!url) { setStatus("Enter a ticker above first.", "error"); return; }
       window.open(url, "_blank", "noopener");
     }
 
-    async function fetchKalshi() {
-      const url = getApiUrl();
-      if (!url) { setStatus("Enter a ticker above first.", "error"); return; }
-      const btn = document.getElementById("fetchBtn");
-      btn.disabled = true;
-      btn.textContent = "Fetching\u2026";
-      setStatus("Fetching from Kalshi API\u2026", "ok");
-      const manualSection = document.getElementById("manualPasteSection");
-      manualSection.style.display = "none";
+    async function fetchWithTimeout(url, ms) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ms);
       try {
-        const controller = new AbortController();
-        const timeout = setTimeout(() => controller.abort(), 3000);
         const res = await fetch(url, { signal: controller.signal });
-        clearTimeout(timeout);
+        clearTimeout(timer);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const payload = await res.json();
-        populateFromPayload(payload);
+        return await res.json();
       } catch (err) {
-        const reason = err.name === "AbortError" ? "timed out after 3 s" : err.message;
-        setStatus(`Auto-fetch failed (${reason}). Use manual paste below, or open the link in a new tab.`, "error");
-        manualSection.style.display = "grid";
-      } finally {
-        btn.disabled = false;
-        btn.textContent = "Fetch from Kalshi";
+        clearTimeout(timer);
+        throw err;
       }
     }
 
-    function parsePastedJson() {
-      const raw = document.getElementById("jsonPasteArea").value.trim();
-      if (!raw) { setStatus("Paste area is empty.", "error"); return; }
-      let payload;
-      try { payload = JSON.parse(raw); }
-      catch (_e) { setStatus("Invalid JSON \u2014 could not parse pasted text.", "error"); return; }
-      try { populateFromPayload(payload); }
-      catch (err) { setStatus(`Failed to load from pasted JSON: ${err.message}`, "error"); }
+    /* ── Sharp odds parsing ── */
+
+    function parseSharpOdds(text) {
+      const lines = text.split(/\n/).map(l => l.trim()).filter(Boolean);
+      if (!lines.length) return [];
+
+      /* Try per-line parsing first (team + odds on same line) */
+      const perLine = tryPerLineParse(lines);
+      if (perLine.length > 0) return perLine;
+
+      /* Fall back to alternating lines (team, odds, team, odds ...) */
+      return tryMultilineParse(lines);
+    }
+
+    function isAmericanOdds(s) {
+      return /^[+-]?\d+$/.test(s) && Math.abs(parseInt(s, 10)) >= 100;
+    }
+
+    function tryPerLineParse(lines) {
+      const results = [];
+      for (const line of lines) {
+        let parts;
+        if (/[\t,|]/.test(line)) {
+          parts = line.split(/[\t,|]/).map(s => s.trim()).filter(Boolean);
+        } else {
+          /* Space-separated: try team...odds or odds...team */
+          const m1 = line.match(/^(.+?)\s+([+-]?\d+)$/);
+          const m2 = line.match(/^([+-]?\d+)\s+(.+)$/);
+          if (m1 && isAmericanOdds(m1[2])) {
+            parts = [m1[1], m1[2]];
+          } else if (m2 && isAmericanOdds(m2[1])) {
+            parts = [m2[1], m2[2]];
+          } else {
+            return []; /* can't parse this line in per-line mode */
+          }
+        }
+        if (parts.length < 2) return [];
+
+        const lastIsOdds = isAmericanOdds(parts[parts.length - 1]);
+        const firstIsOdds = isAmericanOdds(parts[0]);
+
+        if (lastIsOdds) {
+          results.push({ team: parts.slice(0, -1).join(" "), odds: parseInt(parts[parts.length - 1], 10) });
+        } else if (firstIsOdds) {
+          results.push({ team: parts.slice(1).join(" "), odds: parseInt(parts[0], 10) });
+        } else {
+          return [];
+        }
+      }
+      return results;
+    }
+
+    function tryMultilineParse(lines) {
+      if (lines.length < 2 || lines.length % 2 !== 0) return [];
+      const results = [];
+
+      /* Detect: is line 0 odds or team? */
+      const firstIsOdds = isAmericanOdds(lines[0]);
+      const secondIsOdds = isAmericanOdds(lines[1]);
+
+      if (firstIsOdds === secondIsOdds) return []; /* can't determine pattern */
+
+      for (let i = 0; i < lines.length; i += 2) {
+        const a = lines[i], b = lines[i + 1];
+        if (firstIsOdds) {
+          if (!isAmericanOdds(a)) return [];
+          results.push({ team: b, odds: parseInt(a, 10) });
+        } else {
+          if (!isAmericanOdds(b)) return [];
+          results.push({ team: a, odds: parseInt(b, 10) });
+        }
+      }
+      return results;
+    }
+
+    /* ── Devigger API ── */
+
+    function formatOddsForApi(odds) {
+      /* American odds: positive → no sign needed, negative → include minus */
+      return odds >= 0 ? String(odds) : String(odds);
+    }
+
+    async function callDevigger(allOdds, teamIdx) {
+      /* Rotate so team of interest is first */
+      const rotated = [allOdds[teamIdx], ...allOdds.filter((_, i) => i !== teamIdx)];
+      const legodds = rotated.map(formatOddsForApi).join("/");
+      const url = "https://api.crazyninjaodds.com/api/devigger/v1/sportsbook_devigger.aspx"
+        + `?api=open&legodds=${encodeURIComponent(legodds)}&DevigMethod=3&Args=url`;
+
+      const data = await fetchWithTimeout(url, 8000);
+      return {
+        fairValue: data?.Final?.FairValue ?? null,
+        url: data?.Final?.URL ?? null
+      };
+    }
+
+    async function devigAndLoad() {
+      const text = sharpPasteEl.value.trim();
+      if (!text) { setStatus("Paste sharp odds first.", "error"); return; }
+
+      const parsed = parseSharpOdds(text);
+      if (parsed.length < 2) {
+        setStatus("Could not parse odds. Need at least 2 teams. Try: team +odds per line.", "error");
+        return;
+      }
+
+      const btn = document.getElementById("devigBtn");
+      btn.disabled = true;
+      btn.textContent = "Devigging\u2026";
+      devigStatusEl.textContent = "";
+      deviggerUrls = {};
+
+      try {
+        const allOdds = parsed.map(p => p.odds);
+        const results = [];
+
+        for (let i = 0; i < parsed.length; i += 1) {
+          devigStatusEl.textContent = `Devigging ${i + 1}/${parsed.length}\u2026`;
+          const res = await callDevigger(allOdds, i);
+          results.push({ ...parsed[i], fairValue: res.fairValue, devigUrl: res.url });
+          if (res.url) deviggerUrls[parsed[i].team] = res.url;
+        }
+
+        /* Check if any existing Kalshi rows — merge if so */
+        const existingRows = [...rowsEl.querySelectorAll("tr")];
+        const hasKalshiData = existingRows.length > 0 &&
+          existingRows.some(tr => {
+            const np = Number(tr.querySelector(".noPrice").value);
+            return Number.isFinite(np) && np > 0 && np < 1;
+          });
+
+        if (hasKalshiData) {
+          mergeSharpIntoExisting(results);
+        } else {
+          /* Fresh load from sharp only */
+          clearMarketBanner();
+          rowsEl.innerHTML = "";
+          results.forEach(r => {
+            const probPct = r.fairValue != null ? (r.fairValue * 100).toFixed(2) : "";
+            addRow({ team: r.team, probPct, noPrice: "", shares: 0 });
+          });
+        }
+
+        devigStatusEl.textContent = `Done — ${results.length} teams devigged.`;
+        setStatus(`Loaded ${results.length} teams from sharp odds. ${hasKalshiData ? "Merged with Kalshi prices." : "Add Kalshi prices next."}`, "ok");
+        recalculate();
+      } catch (err) {
+        setStatus(`Devigger API error: ${err.message}`, "error");
+        devigStatusEl.textContent = "Failed.";
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Devig & Load";
+      }
+    }
+
+    /* ── Kalshi JSON loading ── */
+
+    function populateFromKalshi(payload) {
+      const eventData = payload?.event;
+      if (!eventData) throw new Error("Missing event payload");
+
+      const markets = Array.isArray(eventData.markets) ? eventData.markets
+        : (Array.isArray(payload.markets) ? payload.markets : []);
+      if (!markets.length) throw new Error("No markets in event response");
+
+      const kalshiRows = [];
+      for (const market of markets) {
+        const team = String(market?.no_sub_title || market?.subtitle || market?.title || market?.ticker || "").trim();
+        const noPrice = Number(market?.no_bid_dollars);
+        if (!team) continue;
+        if (!Number.isFinite(noPrice) || noPrice <= 0 || noPrice >= 1) continue;
+        kalshiRows.push({ team, noPrice });
+      }
+      if (!kalshiRows.length) throw new Error("No usable markets with no_sub_title and no_bid_dollars in (0,1)");
+
+      const ticker = String(eventData.event_ticker || "");
+      const title = String(eventData.title || eventData.sub_title || ticker);
+
+      /* Check if devigger data is already loaded */
+      const existingRows = [...rowsEl.querySelectorAll("tr")];
+      const hasDevigData = Object.keys(deviggerUrls).length > 0;
+
+      if (hasDevigData && existingRows.length > 0) {
+        mergeKalshiIntoExisting(kalshiRows);
+      } else {
+        /* Fresh load: Kalshi only */
+        const probs = distributeEqualProbabilities(kalshiRows.length);
+        clearMarketBanner();
+        rowsEl.innerHTML = "";
+        kalshiRows.forEach((row, idx) => {
+          addRow({ team: row.team, probPct: probs[idx], noPrice: row.noPrice, shares: 0 });
+        });
+      }
+
+      marketTitleEl.textContent = `Loaded Event: ${title}${ticker ? " (" + ticker + ")" : ""}`;
+      if (eventData.mutually_exclusive !== true) {
+        showMarketWarning("Warning: event.mutually_exclusive is not true. Calculator still loaded markets.");
+      }
+      setStatus(`Loaded ${kalshiRows.length} Kalshi markets. ${hasDevigData ? "Merged with sharp fair values." : "Update probabilities before betting."}`, "ok");
+      recalculate();
+    }
+
+    /* ── Merge logic ── */
+
+    function normalizeTeamName(name) {
+      return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+    }
+
+    function mergeSharpIntoExisting(sharpResults) {
+      /* Match sharp teams to existing (Kalshi) rows by name */
+      const existingRows = [...rowsEl.querySelectorAll("tr")];
+      const existing = existingRows.map(tr => ({
+        tr,
+        team: tr.querySelector(".team").value.trim(),
+        norm: normalizeTeamName(tr.querySelector(".team").value.trim())
+      }));
+
+      const matched = new Set();
+      const unmatched = [];
+
+      for (const sr of sharpResults) {
+        const norm = normalizeTeamName(sr.team);
+        const match = existing.find(e => e.norm === norm && !matched.has(e.norm));
+        if (match) {
+          matched.add(match.norm);
+          /* Update probability from fair value */
+          if (sr.fairValue != null) {
+            match.tr.querySelector(".probPct").value = (sr.fairValue * 100).toFixed(2);
+          }
+        } else {
+          unmatched.push(sr);
+        }
+      }
+
+      /* Add unmatched sharp teams as new rows (no Kalshi price) */
+      for (const sr of unmatched) {
+        const probPct = sr.fairValue != null ? (sr.fairValue * 100).toFixed(2) : "";
+        addRow({ team: sr.team, probPct, noPrice: "", shares: 0 });
+      }
+
+      if (unmatched.length > 0) {
+        showMarketWarning(`${unmatched.length} sharp team(s) had no Kalshi match: ${unmatched.map(u => u.team).join(", ")}`);
+      }
+    }
+
+    function mergeKalshiIntoExisting(kalshiRows) {
+      /* Match Kalshi teams to existing (sharp) rows by name */
+      const existingRows = [...rowsEl.querySelectorAll("tr")];
+      const existing = existingRows.map(tr => ({
+        tr,
+        team: tr.querySelector(".team").value.trim(),
+        norm: normalizeTeamName(tr.querySelector(".team").value.trim())
+      }));
+
+      const matched = new Set();
+      const unmatched = [];
+
+      for (const kr of kalshiRows) {
+        const norm = normalizeTeamName(kr.team);
+        const match = existing.find(e => e.norm === norm && !matched.has(e.norm));
+        if (match) {
+          matched.add(match.norm);
+          /* Fill in NO price from Kalshi */
+          match.tr.querySelector(".noPrice").value = kr.noPrice;
+        } else {
+          unmatched.push(kr);
+        }
+      }
+
+      /* Add unmatched Kalshi teams as new rows (no fair value) */
+      const probs = distributeEqualProbabilities(unmatched.length);
+      for (let i = 0; i < unmatched.length; i += 1) {
+        addRow({ team: unmatched[i].team, probPct: probs[i], noPrice: unmatched[i].noPrice, shares: 0 });
+      }
+
+      if (unmatched.length > 0) {
+        showMarketWarning(`${unmatched.length} Kalshi team(s) had no sharp match: ${unmatched.map(u => u.team).join(", ")}`);
+      }
     }
 
     [bankrollEl, kellyFractionEl, probModeEl].forEach((el) => {
@@ -545,42 +843,6 @@ Then apply your fraction f:
       const usedBeforeLast = base * (count - 1);
       probs[count - 1] = Number((100 - usedBeforeLast).toFixed(2));
       return probs;
-    }
-
-    function populateFromPayload(payload) {
-      const eventData = payload?.event;
-      if (!eventData) throw new Error("Missing event payload");
-
-      const markets = Array.isArray(eventData.markets) ? eventData.markets
-        : (Array.isArray(payload.markets) ? payload.markets : []);
-      if (!markets.length) throw new Error("No markets in event response");
-
-      const rows = [];
-      for (const market of markets) {
-        const team = String(market?.no_sub_title || market?.subtitle || market?.title || market?.ticker || "").trim();
-        const noPrice = Number(market?.no_bid_dollars);
-        if (!team) continue;
-        if (!Number.isFinite(noPrice) || noPrice <= 0 || noPrice >= 1) continue;
-        rows.push({ team, noPrice });
-      }
-      if (!rows.length) throw new Error("No usable markets with no_sub_title and no_bid_dollars in (0,1)");
-
-      const ticker = String(eventData.event_ticker || "");
-      const title = String(eventData.title || eventData.sub_title || ticker);
-      const probs = distributeEqualProbabilities(rows.length);
-
-      clearMarketBanner();
-      rowsEl.innerHTML = "";
-      rows.forEach((row, idx) => {
-        addRow({ team: row.team, probPct: probs[idx], noPrice: row.noPrice, shares: 0 });
-      });
-
-      marketTitleEl.textContent = `Loaded Event: ${title}${ticker ? " (" + ticker + ")" : ""}`;
-      if (eventData.mutually_exclusive !== true) {
-        showMarketWarning("Warning: event.mutually_exclusive is not true. Calculator still loaded markets.");
-      }
-      setStatus(`Loaded ${rows.length} markets. Update probabilities before betting.`, "ok");
-      recalculate();
     }
 
     function parseRows() {
@@ -874,9 +1136,13 @@ Then apply your fraction f:
 
         const plClass = plIfYes > 0 ? "pos" : (plIfYes < 0 ? "neg" : "neutral");
         const postClass = postPL > 0 ? "pos" : (postPL < 0 ? "neg" : "neutral");
+        const devUrl = deviggerUrls[teams[k].team];
+        const teamHtml = devUrl
+          ? `<a href="${escapeHtml(devUrl)}" target="_blank" rel="noopener" class="team-link">${escapeHtml(teams[k].team)}</a>`
+          : escapeHtml(teams[k].team);
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td>${escapeHtml(teams[k].team)}</td>
+          <td>${teamHtml}</td>
           <td class="mono">${formatNum(teams[k].p * 100, 2)}%</td>
           <td class="mono ${plClass}">${formatCurrency(plIfYes)}</td>
           <td class="mono ${ev > 0 ? "pos" : (ev < 0 ? "neg" : "neutral")}">${formatPct(ev, 2)}</td>
