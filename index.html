@@ -1326,6 +1326,12 @@ Then apply your fraction f:
       return `${shares} @ ${cents}c`;
     }
 
+    function priceToAmericanOdds(price) {
+      /* Convert a NO price (implied prob) to American odds */
+      if (price >= 0.5) return Math.round(-100 * price / (1 - price));
+      return Math.round(100 * (1 - price) / price);
+    }
+
     function setStatus(msg, type) {
       statusEl.textContent = msg;
       statusEl.className = `status ${type || ""}`.trim();
@@ -1362,11 +1368,12 @@ Then apply your fraction f:
 
       let pSum = teams.reduce((acc, t) => acc + t.pRaw, 0);
       if (probMode === "strict") {
-        if (Math.abs(pSum - 1) > 0.00001) {
-          setStatus(`Probabilities must sum to 100%. Current sum: ${formatNum(pSum * 100, 4)}%.`, "error");
+        if (Math.abs(pSum - 1) > 0.01) {
+          setStatus(`Probabilities must sum to ~100%. Current sum: ${formatNum(pSum * 100, 4)}%.`, "error");
           return;
         }
-        teams.forEach((t) => { t.p = t.pRaw; });
+        /* Normalize away the small residual */
+        teams.forEach((t) => { t.p = t.pRaw / pSum; });
       } else {
         if (pSum <= 0) {
           setStatus("Total probability must be > 0 to normalize.", "error");
@@ -1420,6 +1427,7 @@ Then apply your fraction f:
       const portfolioMaxLoss = Math.min(...postBidPL);
       const portfolioMaxWin = Math.max(...postBidPL);
 
+      const summaryRows = [];
       for (let k = 0; k < teams.length; k += 1) {
         const ev = 1 - teams[k].p - teams[k].noPrice;
         const plIfYes = wealth[k] - bankroll;
@@ -1428,7 +1436,12 @@ Then apply your fraction f:
 
         const plClass = plIfYes > 0 ? "pos" : (plIfYes < 0 ? "neg" : "neutral");
         const postClass = postPL > 0 ? "pos" : (postPL < 0 ? "neg" : "neutral");
-        const devUrl = deviggerUrls[teams[k].team];
+        let devUrl = deviggerUrls[teams[k].team] || null;
+        if (devUrl && teams[k].noPrice > 0 && teams[k].noPrice < 1) {
+          const finalOdds = priceToAmericanOdds(teams[k].noPrice);
+          const sep = devUrl.includes("?") ? "&" : "?";
+          devUrl += `${sep}FinalOdds=${encodeURIComponent(finalOdds)}`;
+        }
         const teamHtml = devUrl
           ? `<a href="${escapeHtml(devUrl)}" target="_blank" rel="noopener" class="team-link">${escapeHtml(teams[k].team)}</a>`
           : escapeHtml(teams[k].team);
@@ -1436,8 +1449,10 @@ Then apply your fraction f:
         const flagHtml = src === "both" ? '<span class="source-flag flag-matched" title="Matched">\u2713</span>'
           : src === "sharp" ? '<span class="source-flag flag-sharp-only">Sharp only</span>'
           : src === "kalshi" ? '<span class="source-flag flag-kalshi-only">Kalshi only</span>' : '';
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
+        summaryRows.push({
+          bid: bidShares[k],
+          team: teams[k].team,
+          html: `
           <td>${teamHtml}${flagHtml}</td>
           <td class="mono">${formatNum(teams[k].p * 100, 2)}%</td>
           <td class="mono ${plClass}">${formatCurrency(plIfYes)}</td>
@@ -1445,7 +1460,26 @@ Then apply your fraction f:
           <td class="mono neutral">${formatNum(iqk, 0)}</td>
           <td class="mono">${formatBid(bidShares[k], teams[k].noPrice)}</td>
           <td class="mono ${postClass}">${formatCurrency(postPL)}</td>
-        `;
+        `
+        });
+      }
+
+      /* Sort: non-zero bids (alphabetical), separator, zero bids (alphabetical) */
+      const withBid = summaryRows.filter(r => r.bid > 0).sort((a, b) => a.team.localeCompare(b.team));
+      const noBid = summaryRows.filter(r => r.bid <= 0).sort((a, b) => a.team.localeCompare(b.team));
+      for (const r of withBid) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = r.html;
+        summaryTableEl.appendChild(tr);
+      }
+      if (withBid.length > 0 && noBid.length > 0) {
+        const sep = document.createElement("tr");
+        sep.innerHTML = `<td colspan="7" style="text-align:center; font-size:0.82rem; color:var(--muted); padding:4px; border-bottom:1px dashed var(--line);">\u2014 no bid \u2014</td>`;
+        summaryTableEl.appendChild(sep);
+      }
+      for (const r of noBid) {
+        const tr = document.createElement("tr");
+        tr.innerHTML = r.html;
         summaryTableEl.appendChild(tr);
       }
 
