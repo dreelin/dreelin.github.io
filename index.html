@@ -88,11 +88,6 @@
       margin-top: 14px;
     }
 
-    .market-loader {
-      display: grid;
-      align-content: end;
-    }
-
     .market-title {
       margin-top: 10px;
       font-size: 0.95rem;
@@ -269,9 +264,6 @@
         padding: 14px;
       }
 
-      .market-loader {
-        display: block;
-      }
     }
   </style>
 </head>
@@ -288,8 +280,15 @@
           Kalshi Market (URL or event ticker)
           <input id="kalshiInput" type="text" placeholder="https://kalshi.com/events/.../KX... or KX..." />
         </label>
-        <div class="market-loader">
-          <button id="loadKalshiBtn" type="button" class="btn-primary">Load Kalshi Event</button>
+        <div style="grid-column: 1 / -1; margin-top: 4px; display: grid; gap: 8px;">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <span style="font-size:0.9rem; color:var(--muted);">1. Copy API link:</span>
+            <code id="kalshiApiLink" style="font-family:monospace; background:#f5f0e8; padding:3px 8px; border-radius:6px; word-break:break-all; font-size:0.82rem; flex:1; min-width:200px;"></code>
+            <button id="copyUrlBtn" type="button" class="btn-warm" style="white-space:nowrap;">Copy URL</button>
+          </div>
+          <div style="font-size:0.9rem; color:var(--muted);">2. Open that URL in a new tab, select all (Ctrl+A), copy (Ctrl+C), paste below:</div>
+          <textarea id="jsonPasteArea" rows="3" style="width:100%; font-family:monospace; font-size:0.82rem; border:1px solid var(--line); border-radius:10px; padding:8px; resize:vertical;" placeholder="Paste the full API JSON response here..."></textarea>
+          <div><button id="parseJsonBtn" type="button" class="btn-primary">Load From Pasted JSON</button></div>
         </div>
         <label>
           Bankroll (W0)
@@ -388,7 +387,6 @@ Then apply your fraction f:
     const marketWarningEl = document.getElementById("marketWarning");
 
     const kalshiInputEl = document.getElementById("kalshiInput");
-    const loadKalshiBtn = document.getElementById("loadKalshiBtn");
     const bankrollEl = document.getElementById("bankroll");
     const kellyFractionEl = document.getElementById("kellyFraction");
     const probModeEl = document.getElementById("probMode");
@@ -413,13 +411,43 @@ Then apply your fraction f:
     });
 
     document.getElementById("recalcBtn").addEventListener("click", recalculate);
-    loadKalshiBtn.addEventListener("click", loadKalshiEvent);
-    kalshiInputEl.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") {
-        event.preventDefault();
-        loadKalshiEvent();
+    kalshiInputEl.addEventListener("input", updateApiLink);
+    document.getElementById("parseJsonBtn").addEventListener("click", parsePastedJson);
+    document.getElementById("copyUrlBtn").addEventListener("click", copyApiUrl);
+
+    function updateApiLink() {
+      const ticker = extractEventTicker(kalshiInputEl.value);
+      const el = document.getElementById("kalshiApiLink");
+      if (ticker) {
+        el.textContent = `https://api.elections.kalshi.com/trade-api/v2/events/${ticker}?with_nested_markets=true`;
+      } else {
+        el.textContent = "Enter a ticker or URL above first.";
       }
-    });
+    }
+    updateApiLink();
+
+    function copyApiUrl() {
+      const text = document.getElementById("kalshiApiLink").textContent;
+      if (!text || text.startsWith("Enter")) {
+        setStatus("Enter a ticker above first.", "error");
+        return;
+      }
+      navigator.clipboard.writeText(text).then(() => {
+        const btn = document.getElementById("copyUrlBtn");
+        btn.textContent = "Copied!";
+        setTimeout(() => { btn.textContent = "Copy URL"; }, 1500);
+      });
+    }
+
+    function parsePastedJson() {
+      const raw = document.getElementById("jsonPasteArea").value.trim();
+      if (!raw) { setStatus("Paste area is empty.", "error"); return; }
+      let payload;
+      try { payload = JSON.parse(raw); }
+      catch (_e) { setStatus("Invalid JSON \u2014 could not parse pasted text.", "error"); return; }
+      try { populateFromPayload(payload); }
+      catch (err) { setStatus(`Failed to load from pasted JSON: ${err.message}`, "error"); }
+    }
 
     [bankrollEl, kellyFractionEl, probModeEl].forEach((el) => {
       el.addEventListener("input", recalculate);
@@ -493,115 +521,40 @@ Then apply your fraction f:
       return probs;
     }
 
-    async function loadKalshiEvent() {
-      const ticker = extractEventTicker(kalshiInputEl.value);
-      if (!ticker) {
-        setStatus("Enter a Kalshi URL or event ticker first.", "error");
-        return;
+    function populateFromPayload(payload) {
+      const eventData = payload?.event;
+      if (!eventData) throw new Error("Missing event payload");
+
+      const markets = Array.isArray(eventData.markets) ? eventData.markets
+        : (Array.isArray(payload.markets) ? payload.markets : []);
+      if (!markets.length) throw new Error("No markets in event response");
+
+      const rows = [];
+      for (const market of markets) {
+        const team = String(market?.no_sub_title || market?.subtitle || market?.title || market?.ticker || "").trim();
+        const noPrice = Number(market?.no_bid_dollars);
+        if (!team) continue;
+        if (!Number.isFinite(noPrice) || noPrice <= 0 || noPrice >= 1) continue;
+        rows.push({ team, noPrice });
       }
-      kalshiInputEl.value = ticker;
+      if (!rows.length) throw new Error("No usable markets with no_sub_title and no_bid_dollars in (0,1)");
+
+      const ticker = String(eventData.event_ticker || "");
+      const title = String(eventData.title || eventData.sub_title || ticker);
+      const probs = distributeEqualProbabilities(rows.length);
 
       clearMarketBanner();
-      setStatus(`Loading Kalshi event ${ticker}...`, "");
-      loadKalshiBtn.disabled = true;
+      rowsEl.innerHTML = "";
+      rows.forEach((row, idx) => {
+        addRow({ team: row.team, probPct: probs[idx], noPrice: row.noPrice, shares: 0 });
+      });
 
-      try {
-        const endpoint = `https://api.elections.kalshi.com/trade-api/v2/events/${encodeURIComponent(ticker)}?with_nested_markets=true`;
-        const fetchResult = await fetchJsonWithFallback(endpoint);
-        const payload = fetchResult.payload;
-        const eventData = payload?.event;
-        if (!eventData) {
-          throw new Error("Missing event payload");
-        }
-
-        const markets = Array.isArray(eventData.markets) ? eventData.markets : (Array.isArray(payload.markets) ? payload.markets : []);
-        if (!markets.length) {
-          throw new Error("No markets in event response");
-        }
-
-        const rows = [];
-        for (const market of markets) {
-          const team = String(market?.no_sub_title || market?.subtitle || market?.title || market?.ticker || "").trim();
-          const noPrice = Number(market?.no_bid_dollars);
-          if (!team) continue;
-          if (!Number.isFinite(noPrice) || noPrice <= 0 || noPrice >= 1) continue;
-          rows.push({ team, noPrice });
-        }
-
-        if (!rows.length) {
-          throw new Error("No usable markets with no_sub_title and no_bid_dollars in (0,1)");
-        }
-
-        const probs = distributeEqualProbabilities(rows.length);
-        rowsEl.innerHTML = "";
-        rows.forEach((row, idx) => {
-          addRow({
-            team: row.team,
-            probPct: probs[idx],
-            noPrice: row.noPrice,
-            shares: 0
-          });
-        });
-
-        const title = String(eventData.title || eventData.sub_title || ticker);
-        marketTitleEl.textContent = `Loaded Event: ${title} (${ticker})`;
-        if (eventData.mutually_exclusive !== true) {
-          showMarketWarning("Warning: event.mutually_exclusive is not true. Calculator still loaded markets.");
-        }
-        if (fetchResult.source !== "direct") {
-          showMarketWarning(`Loaded via CORS relay (${fetchResult.source}) because direct API access was blocked.`);
-        }
-
-        setStatus(`Loaded ${rows.length} markets from Kalshi event ${ticker}. Update probabilities before betting.`, "ok");
-        recalculate();
-      } catch (err) {
-        const message = err && err.message ? err.message : "Unknown error";
-        setStatus(`Failed to load Kalshi event: ${message}`, "error");
-      } finally {
-        loadKalshiBtn.disabled = false;
+      marketTitleEl.textContent = `Loaded Event: ${title}${ticker ? " (" + ticker + ")" : ""}`;
+      if (eventData.mutually_exclusive !== true) {
+        showMarketWarning("Warning: event.mutually_exclusive is not true. Calculator still loaded markets.");
       }
-    }
-
-    async function fetchJsonWithFallback(endpoint) {
-      const attempts = [
-        {
-          source: "direct",
-          url: endpoint,
-          options: { method: "GET", headers: { Accept: "application/json" } }
-        },
-        {
-          source: "allorigins",
-          url: `https://api.allorigins.win/raw?url=${encodeURIComponent(endpoint)}`,
-          options: { method: "GET", headers: { Accept: "application/json" } }
-        },
-        {
-          source: "corsproxy",
-          url: `https://corsproxy.io/?${encodeURIComponent(endpoint)}`,
-          options: { method: "GET", headers: { Accept: "application/json" } }
-        }
-      ];
-
-      const errors = [];
-      for (const attempt of attempts) {
-        try {
-          const response = await fetch(attempt.url, attempt.options);
-          if (!response.ok) {
-            errors.push(`${attempt.source}: HTTP ${response.status}`);
-            continue;
-          }
-          const payload = await response.json();
-          if (!payload || typeof payload !== "object") {
-            errors.push(`${attempt.source}: invalid JSON payload`);
-            continue;
-          }
-          return { payload, source: attempt.source };
-        } catch (err) {
-          const msg = err && err.message ? err.message : "request failed";
-          errors.push(`${attempt.source}: ${msg}`);
-        }
-      }
-
-      throw new Error(`All fetch attempts failed (${errors.join(" | ")})`);
+      setStatus(`Loaded ${rows.length} markets. Update probabilities before betting.`, "ok");
+      recalculate();
     }
 
     function parseRows() {
