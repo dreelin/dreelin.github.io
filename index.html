@@ -1,0 +1,635 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Mutually Exclusive NO Bet Calculator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f4efe4;
+      --card: #fffaf0;
+      --ink: #1c1d21;
+      --muted: #5b5e66;
+      --accent: #0f766e;
+      --accent-2: #f59e0b;
+      --danger: #b91c1c;
+      --ok: #0f766e;
+      --line: #d6cfbf;
+      --shadow: 0 12px 30px rgba(0, 0, 0, 0.08);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Space Grotesk", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 10% 10%, rgba(245, 158, 11, 0.2), transparent 35%),
+        radial-gradient(circle at 90% 80%, rgba(15, 118, 110, 0.18), transparent 40%),
+        var(--bg);
+      padding: 24px;
+    }
+
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+      animation: rise 420ms ease-out;
+    }
+
+    @keyframes rise {
+      from {
+        opacity: 0;
+        transform: translateY(10px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      padding: 18px;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.4rem, 2.2vw, 2rem);
+      letter-spacing: 0.2px;
+    }
+
+    h2 {
+      margin: 0 0 12px;
+      font-size: 1.1rem;
+    }
+
+    p {
+      margin: 0;
+      line-height: 1.45;
+      color: var(--muted);
+    }
+
+    .meta {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 10px;
+      margin-top: 14px;
+    }
+
+    label {
+      font-size: 0.9rem;
+      color: var(--muted);
+      display: grid;
+      gap: 6px;
+    }
+
+    input,
+    select,
+    button {
+      font: inherit;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      background: #fff;
+      color: var(--ink);
+    }
+
+    input:focus,
+    select:focus,
+    button:focus {
+      outline: 2px solid #0f766e55;
+      outline-offset: 1px;
+    }
+
+    button {
+      cursor: pointer;
+      transition: transform 120ms ease, background-color 120ms ease;
+    }
+
+    button:hover {
+      transform: translateY(-1px);
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      color: #fff;
+      border-color: var(--accent);
+    }
+
+    .btn-warm {
+      background: #ffedd5;
+      border-color: #f59e0b;
+    }
+
+    .table-wrap {
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 780px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid var(--line);
+      padding: 9px;
+      text-align: left;
+      font-size: 0.92rem;
+    }
+
+    th {
+      background: #f8f2e6;
+      color: #3b3e44;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    .mono {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.88rem;
+    }
+
+    .status {
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fffbf5;
+      font-size: 0.92rem;
+    }
+
+    .status.error {
+      border-color: #fca5a5;
+      background: #fff1f2;
+      color: var(--danger);
+    }
+
+    .status.ok {
+      border-color: #99f6e4;
+      background: #ecfeff;
+      color: #0f766e;
+    }
+
+    .grid-two {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 14px;
+    }
+
+    .small-note {
+      margin-top: 8px;
+      font-size: 0.86rem;
+      color: var(--muted);
+    }
+
+    .formula {
+      margin-top: 8px;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px dashed var(--line);
+      background: #fff;
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 0.85rem;
+      white-space: pre-wrap;
+    }
+
+    @media (max-width: 640px) {
+      body {
+        padding: 12px;
+      }
+
+      .card {
+        padding: 14px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="card">
+      <h1>Mutually Exclusive NO Bet Calculator</h1>
+      <p>
+        Dynamic sizing for a winner-take-all board. Enter your true probabilities, market NO prices, and filled NO shares.
+        The calculator recomputes incremental full Kelly and your Kelly fraction (for example, quarter Kelly) for each next fill.
+      </p>
+      <div class="meta">
+        <label>
+          Bankroll (W0)
+          <input id="bankroll" type="number" min="0.01" step="0.01" value="10000" />
+        </label>
+        <label>
+          Kelly fraction (0.25 = quarter Kelly)
+          <input id="kellyFraction" type="number" min="0" max="1" step="0.01" value="0.25" />
+        </label>
+        <label>
+          Probability sum handling
+          <select id="probMode">
+            <option value="strict" selected>Strict: must sum to 100%</option>
+            <option value="normalize">Normalize internally</option>
+          </select>
+        </label>
+      </div>
+      <div class="btn-row">
+        <button id="addRowBtn" type="button" class="btn-warm">Add Team</button>
+        <button id="sampleBtn" type="button">Load Sample</button>
+        <button id="recalcBtn" type="button" class="btn-primary">Recalculate</button>
+      </div>
+      <div id="status" class="status">Waiting for input.</div>
+    </section>
+
+    <section class="card">
+      <h2>Teams And Fills</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>True Win Prob (%)</th>
+              <th>NO Price (n_i)</th>
+              <th>Existing NO Shares (q_i)</th>
+              <th>EV Per Share</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <p class="small-note">
+        EV per share here is linear expectation: 1 - p_i - n_i. Kelly output still depends on the full portfolio state vector.
+      </p>
+    </section>
+
+    <section class="card grid-two">
+      <div>
+        <h2>Current State Risk</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Champion State</th>
+                <th>Prob</th>
+                <th>State Wealth W_s</th>
+              </tr>
+            </thead>
+            <tbody id="stateTable"></tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h2>Incremental Next-Fill Sizing</h2>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Team</th>
+                <th>Full Kelly Delta q*</th>
+                <th>Fractional Delta q</th>
+                <th>Worst W_s After Fractional</th>
+              </tr>
+            </thead>
+            <tbody id="nextFillTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>Formula Snapshot</h2>
+      <div class="formula">For team i NO bet at price n_i and size q_i:
+r_{s,i} = -n_i if s = i, otherwise r_{s,i} = 1 - n_i
+
+W_s = W0 + sum_i q_i * r_{s,i}
+
+Incremental solve for team k (delta q >= 0):
+maximize  pi_k*log(W_k - n_k*delta q)
+      + sum_{s!=k} pi_s*log(W_s + (1-n_k)*delta q)
+
+Then apply your fraction f:
+  delta_q_fractional = f * delta_q_full_kelly</div>
+    </section>
+  </main>
+
+  <script>
+    const rowsEl = document.getElementById("rows");
+    const stateTableEl = document.getElementById("stateTable");
+    const nextFillTableEl = document.getElementById("nextFillTable");
+    const statusEl = document.getElementById("status");
+
+    const bankrollEl = document.getElementById("bankroll");
+    const kellyFractionEl = document.getElementById("kellyFraction");
+    const probModeEl = document.getElementById("probMode");
+
+    document.getElementById("addRowBtn").addEventListener("click", () => {
+      addRow({ team: "", probPct: "", noPrice: "", shares: "0" });
+    });
+
+    document.getElementById("sampleBtn").addEventListener("click", () => {
+      rowsEl.innerHTML = "";
+      const sample = [
+        { team: "Duke", probPct: 17, noPrice: 0.79, shares: 55 },
+        { team: "Houston", probPct: 14, noPrice: 0.83, shares: 35 },
+        { team: "UConn", probPct: 12, noPrice: 0.86, shares: 20 },
+        { team: "Purdue", probPct: 11, noPrice: 0.88, shares: 15 },
+        { team: "Arizona", probPct: 10, noPrice: 0.9, shares: 18 },
+        { team: "Field", probPct: 36, noPrice: 0.58, shares: 0 }
+      ];
+      sample.forEach(addRow);
+      recalculate();
+    });
+
+    document.getElementById("recalcBtn").addEventListener("click", recalculate);
+
+    [bankrollEl, kellyFractionEl, probModeEl].forEach((el) => {
+      el.addEventListener("input", recalculate);
+      el.addEventListener("change", recalculate);
+    });
+
+    function addRow(data) {
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td><input type="text" class="team" value="${escapeAttr(data.team ?? "")}" placeholder="Team" /></td>
+        <td><input type="number" class="probPct" min="0" step="0.01" value="${escapeAttr(data.probPct ?? "")}" /></td>
+        <td><input type="number" class="noPrice" min="0" max="1" step="0.0001" value="${escapeAttr(data.noPrice ?? "")}" /></td>
+        <td><input type="number" class="shares" min="0" step="0.0001" value="${escapeAttr(data.shares ?? "0")}" /></td>
+        <td class="mono evCell">-</td>
+        <td><button type="button" class="deleteBtn">Delete</button></td>
+      `;
+
+      tr.querySelectorAll("input").forEach((input) => {
+        input.addEventListener("input", recalculate);
+        input.addEventListener("change", recalculate);
+      });
+
+      tr.querySelector(".deleteBtn").addEventListener("click", () => {
+        tr.remove();
+        recalculate();
+      });
+
+      rowsEl.appendChild(tr);
+    }
+
+    function escapeAttr(value) {
+      return String(value).replace(/"/g, "&quot;");
+    }
+
+    function parseRows() {
+      const rows = [...rowsEl.querySelectorAll("tr")];
+      const teams = [];
+      const errors = [];
+
+      rows.forEach((tr, idx) => {
+        const team = tr.querySelector(".team").value.trim() || `Team ${idx + 1}`;
+        const probPct = Number(tr.querySelector(".probPct").value);
+        const noPrice = Number(tr.querySelector(".noPrice").value);
+        const shares = Number(tr.querySelector(".shares").value || 0);
+
+        const evCell = tr.querySelector(".evCell");
+
+        if (!Number.isFinite(probPct) || probPct < 0) {
+          errors.push(`${team}: probability must be >= 0`);
+        }
+        if (!Number.isFinite(noPrice) || noPrice <= 0 || noPrice >= 1) {
+          errors.push(`${team}: NO price must be in (0, 1)`);
+        }
+        if (!Number.isFinite(shares) || shares < 0) {
+          errors.push(`${team}: shares must be >= 0`);
+        }
+
+        const p = probPct / 100;
+        const ev = 1 - p - noPrice;
+        evCell.textContent = Number.isFinite(ev) ? formatNum(ev, 6) : "-";
+
+        teams.push({ team, p, noPrice, shares });
+      });
+
+      return { teams, errors };
+    }
+
+    function computeStateWealths(teams, bankroll) {
+      const n = teams.length;
+      const wealth = new Array(n).fill(bankroll);
+
+      for (let s = 0; s < n; s += 1) {
+        for (let i = 0; i < n; i += 1) {
+          const r = s === i ? -teams[i].noPrice : (1 - teams[i].noPrice);
+          wealth[s] += teams[i].shares * r;
+        }
+      }
+
+      return wealth;
+    }
+
+    function derivativeDelta(teams, wealth, k, dq) {
+      const nk = teams[k].noPrice;
+      let total = -teams[k].p * nk / (wealth[k] - nk * dq);
+      for (let s = 0; s < teams.length; s += 1) {
+        if (s === k) continue;
+        total += teams[s].p * (1 - nk) / (wealth[s] + (1 - nk) * dq);
+      }
+      return total;
+    }
+
+    function solveIncrementalDelta(teams, wealth, k) {
+      const nk = teams[k].noPrice;
+
+      if (!Number.isFinite(wealth[k]) || wealth[k] <= 0) {
+        return { deltaFull: 0, reason: "W_k must be > 0" };
+      }
+
+      for (let s = 0; s < wealth.length; s += 1) {
+        if (!Number.isFinite(wealth[s]) || wealth[s] <= 0) {
+          return { deltaFull: 0, reason: "All W_s must be > 0" };
+        }
+      }
+
+      const d0 = derivativeDelta(teams, wealth, k, 0);
+      if (!Number.isFinite(d0) || d0 <= 0) {
+        return { deltaFull: 0, reason: "No positive Kelly edge at dq=0" };
+      }
+
+      let high = (wealth[k] / nk) * 0.999999;
+      if (!Number.isFinite(high) || high <= 0) {
+        return { deltaFull: 0, reason: "No feasible upper bound" };
+      }
+
+      let dHigh = derivativeDelta(teams, wealth, k, high);
+      if (!Number.isFinite(dHigh)) {
+        high *= 0.5;
+        dHigh = derivativeDelta(teams, wealth, k, high);
+      }
+
+      if (!Number.isFinite(dHigh)) {
+        return { deltaFull: 0, reason: "Numerical instability" };
+      }
+
+      let low = 0;
+      for (let iter = 0; iter < 80; iter += 1) {
+        const mid = 0.5 * (low + high);
+        const dMid = derivativeDelta(teams, wealth, k, mid);
+        if (!Number.isFinite(dMid)) {
+          high = mid;
+          continue;
+        }
+        if (dMid > 0) {
+          low = mid;
+        } else {
+          high = mid;
+        }
+      }
+
+      return { deltaFull: 0.5 * (low + high), reason: "ok" };
+    }
+
+    function minWealthAfterDelta(teams, wealth, k, dq) {
+      const nk = teams[k].noPrice;
+      let minW = Infinity;
+      for (let s = 0; s < teams.length; s += 1) {
+        const ws = s === k ? wealth[s] - nk * dq : wealth[s] + (1 - nk) * dq;
+        if (ws < minW) minW = ws;
+      }
+      return minW;
+    }
+
+    function formatNum(v, d = 4) {
+      if (!Number.isFinite(v)) return "-";
+      return v.toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: 0 });
+    }
+
+    function setStatus(msg, type) {
+      statusEl.textContent = msg;
+      statusEl.className = `status ${type || ""}`.trim();
+    }
+
+    function recalculate() {
+      const bankroll = Number(bankrollEl.value);
+      const fraction = Number(kellyFractionEl.value);
+      const probMode = probModeEl.value;
+
+      stateTableEl.innerHTML = "";
+      nextFillTableEl.innerHTML = "";
+
+      if (!Number.isFinite(bankroll) || bankroll <= 0) {
+        setStatus("Bankroll must be > 0.", "error");
+        return;
+      }
+      if (!Number.isFinite(fraction) || fraction < 0 || fraction > 1) {
+        setStatus("Kelly fraction must be between 0 and 1.", "error");
+        return;
+      }
+
+      const { teams, errors } = parseRows();
+      if (teams.length < 2) {
+        setStatus("Add at least 2 teams (or team groups like Field).", "error");
+        return;
+      }
+      if (errors.length) {
+        setStatus(errors[0], "error");
+        return;
+      }
+
+      let pSum = teams.reduce((acc, t) => acc + t.p, 0);
+      if (probMode === "strict") {
+        if (Math.abs(pSum - 1) > 0.00001) {
+          setStatus(`Probabilities must sum to 100%. Current sum: ${formatNum(pSum * 100, 4)}%.`, "error");
+          return;
+        }
+      } else {
+        if (pSum <= 0) {
+          setStatus("Total probability must be > 0 to normalize.", "error");
+          return;
+        }
+        teams.forEach((t) => { t.p /= pSum; });
+        pSum = 1;
+      }
+
+      const wealth = computeStateWealths(teams, bankroll);
+      const minWealth = Math.min(...wealth);
+      const worstIdx = wealth.indexOf(minWealth);
+
+      teams.forEach((t, i) => {
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${escapeHtml(t.team)}</td>
+          <td class="mono">${formatNum(t.p * 100, 4)}%</td>
+          <td class="mono">${formatNum(wealth[i], 4)}</td>
+        `;
+        stateTableEl.appendChild(tr);
+      });
+
+      let blocked = false;
+      if (wealth.some((w) => w <= 0)) {
+        blocked = true;
+      }
+
+      for (let k = 0; k < teams.length; k += 1) {
+        const res = solveIncrementalDelta(teams, wealth, k);
+        const deltaFull = blocked ? 0 : res.deltaFull;
+        const deltaFrac = fraction * deltaFull;
+        const worstAfterFrac = blocked ? NaN : minWealthAfterDelta(teams, wealth, k, deltaFrac);
+
+        const tr = document.createElement("tr");
+        tr.innerHTML = `
+          <td>${escapeHtml(teams[k].team)}</td>
+          <td class="mono">${formatNum(deltaFull, 6)}</td>
+          <td class="mono">${formatNum(deltaFrac, 6)}</td>
+          <td class="mono">${formatNum(worstAfterFrac, 4)}</td>
+        `;
+        nextFillTableEl.appendChild(tr);
+      }
+
+      if (blocked) {
+        setStatus("One or more state wealth values are <= 0. Kelly log objective is undefined until all W_s > 0.", "error");
+        return;
+      }
+
+      setStatus(
+        `Valid input. Worst current state is ${teams[worstIdx].team} with W_s=${formatNum(minWealth, 4)}. ` +
+        `Recommendations are incremental and recompute after each fill.`,
+        "ok"
+      );
+    }
+
+    function escapeHtml(str) {
+      return String(str)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    addRow({ team: "Team A", probPct: 20, noPrice: 0.75, shares: 0 });
+    addRow({ team: "Team B", probPct: 18, noPrice: 0.78, shares: 0 });
+    addRow({ team: "Field", probPct: 62, noPrice: 0.35, shares: 0 });
+    recalculate();
+  </script>
+</body>
+</html>
