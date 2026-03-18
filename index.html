@@ -152,6 +152,15 @@
       min-width: 780px;
     }
 
+    .col-prob {
+      width: 120px;
+      max-width: 120px;
+    }
+
+    .prob-input {
+      width: 100px;
+    }
+
     th,
     td {
       border-bottom: 1px solid var(--line);
@@ -177,6 +186,20 @@
       font-size: 0.88rem;
     }
 
+    .pos {
+      color: var(--ok);
+      font-weight: 600;
+    }
+
+    .neg {
+      color: var(--danger);
+      font-weight: 600;
+    }
+
+    .neutral {
+      color: var(--muted);
+    }
+
     .status {
       margin-top: 10px;
       padding: 10px 12px;
@@ -196,12 +219,6 @@
       border-color: #99f6e4;
       background: #ecfeff;
       color: #0f766e;
-    }
-
-    .grid-two {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
-      gap: 14px;
     }
 
     .small-note {
@@ -272,10 +289,11 @@
           <thead>
             <tr>
               <th>Team</th>
-              <th>True Win Prob (%)</th>
+              <th class="col-prob">Win Prob %</th>
               <th>NO Price (n_i)</th>
               <th>Existing NO Shares (q_i)</th>
               <th>EV Per Share</th>
+              <th>Independent QK</th>
               <th>Action</th>
             </tr>
           </thead>
@@ -283,42 +301,32 @@
         </table>
       </div>
       <p class="small-note">
-        EV per share here is linear expectation: 1 - p_i - n_i. Kelly output still depends on the full portfolio state vector.
+        EV per share is shown as a percentage using 1 - p_i - n_i. Positive is green, negative is red.
       </p>
     </section>
 
-    <section class="card grid-two">
-      <div>
-        <h2>Current State Risk</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Champion State</th>
-                <th>Prob</th>
-                <th>State Wealth W_s</th>
-              </tr>
-            </thead>
-            <tbody id="stateTable"></tbody>
-          </table>
-        </div>
+    <section class="card">
+      <h2>State + Next Bid Summary</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Team</th>
+              <th>Win Prob</th>
+              <th>P/L If YES</th>
+              <th>EV Per Share</th>
+              <th>Independent QK</th>
+              <th>Bid</th>
+              <th>Max Loss</th>
+              <th>Max Win</th>
+            </tr>
+          </thead>
+          <tbody id="summaryTable"></tbody>
+        </table>
       </div>
-      <div>
-        <h2>Incremental Next-Fill Sizing</h2>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Team</th>
-                <th>Full Kelly Delta q*</th>
-                <th>Fractional Delta q</th>
-                <th>Worst W_s After Fractional</th>
-              </tr>
-            </thead>
-            <tbody id="nextFillTable"></tbody>
-          </table>
-        </div>
-      </div>
+      <p class="small-note">
+        Bid uses rounded fractional Kelly shares and is forced to 0 for non-positive EV rows.
+      </p>
     </section>
 
     <section class="card">
@@ -339,8 +347,7 @@ Then apply your fraction f:
 
   <script>
     const rowsEl = document.getElementById("rows");
-    const stateTableEl = document.getElementById("stateTable");
-    const nextFillTableEl = document.getElementById("nextFillTable");
+    const summaryTableEl = document.getElementById("summaryTable");
     const statusEl = document.getElementById("status");
 
     const bankrollEl = document.getElementById("bankroll");
@@ -376,10 +383,11 @@ Then apply your fraction f:
       const tr = document.createElement("tr");
       tr.innerHTML = `
         <td><input type="text" class="team" value="${escapeAttr(data.team ?? "")}" placeholder="Team" /></td>
-        <td><input type="number" class="probPct" min="0" step="0.01" value="${escapeAttr(data.probPct ?? "")}" /></td>
+        <td><input type="number" class="probPct prob-input" min="0" step="0.01" value="${escapeAttr(data.probPct ?? "")}" /></td>
         <td><input type="number" class="noPrice" min="0" max="1" step="0.0001" value="${escapeAttr(data.noPrice ?? "")}" /></td>
         <td><input type="number" class="shares" min="0" step="0.0001" value="${escapeAttr(data.shares ?? "0")}" /></td>
         <td class="mono evCell">-</td>
+        <td class="mono iqkCell">-</td>
         <td><button type="button" class="deleteBtn">Delete</button></td>
       `;
 
@@ -411,8 +419,6 @@ Then apply your fraction f:
         const noPrice = Number(tr.querySelector(".noPrice").value);
         const shares = Number(tr.querySelector(".shares").value || 0);
 
-        const evCell = tr.querySelector(".evCell");
-
         if (!Number.isFinite(probPct) || probPct < 0) {
           errors.push(`${team}: probability must be >= 0`);
         }
@@ -423,11 +429,15 @@ Then apply your fraction f:
           errors.push(`${team}: shares must be >= 0`);
         }
 
-        const p = probPct / 100;
-        const ev = 1 - p - noPrice;
-        evCell.textContent = Number.isFinite(ev) ? formatNum(ev, 6) : "-";
-
-        teams.push({ team, p, noPrice, shares });
+        teams.push({
+          team,
+          pRaw: probPct / 100,
+          p: probPct / 100,
+          noPrice,
+          shares,
+          evCell: tr.querySelector(".evCell"),
+          iqkCell: tr.querySelector(".iqkCell")
+        });
       });
 
       return { teams, errors };
@@ -508,19 +518,56 @@ Then apply your fraction f:
       return { deltaFull: 0.5 * (low + high), reason: "ok" };
     }
 
-    function minWealthAfterDelta(teams, wealth, k, dq) {
+    function wealthAfterDelta(teams, wealth, k, dq) {
       const nk = teams[k].noPrice;
-      let minW = Infinity;
+      const nextWealth = [];
       for (let s = 0; s < teams.length; s += 1) {
-        const ws = s === k ? wealth[s] - nk * dq : wealth[s] + (1 - nk) * dq;
-        if (ws < minW) minW = ws;
+        nextWealth.push(s === k ? wealth[s] - nk * dq : wealth[s] + (1 - nk) * dq);
       }
-      return minW;
+      return nextWealth;
     }
 
     function formatNum(v, d = 4) {
       if (!Number.isFinite(v)) return "-";
       return v.toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: 0 });
+    }
+
+    function formatPct(v, d = 2) {
+      if (!Number.isFinite(v)) return "-";
+      return `${v >= 0 ? "+" : ""}${(v * 100).toFixed(d)}%`;
+    }
+
+    function formatCurrency(v) {
+      if (!Number.isFinite(v)) return "-";
+      const abs = Math.abs(v).toLocaleString(undefined, { maximumFractionDigits: 2, minimumFractionDigits: 2 });
+      if (v < 0) return `-$${abs}`;
+      return `+$${abs}`;
+    }
+
+    function setSignClass(el, value) {
+      el.classList.remove("pos", "neg", "neutral");
+      if (!Number.isFinite(value) || value === 0) {
+        el.classList.add("neutral");
+      } else if (value > 0) {
+        el.classList.add("pos");
+      } else {
+        el.classList.add("neg");
+      }
+    }
+
+    function independentQKShares(team, bankroll, fraction) {
+      const ev = 1 - team.p - team.noPrice;
+      if (!Number.isFinite(ev) || ev <= 0) return 0;
+      const denom = team.noPrice * (1 - team.noPrice);
+      if (!Number.isFinite(denom) || denom <= 0) return 0;
+      const fullKelly = bankroll * ev / denom;
+      if (!Number.isFinite(fullKelly) || fullKelly <= 0) return 0;
+      return Math.max(0, Math.round(fraction * fullKelly));
+    }
+
+    function formatBid(shares, noPrice) {
+      const cents = formatNum(noPrice * 100, 2);
+      return `${shares} @ ${cents}c`;
     }
 
     function setStatus(msg, type) {
@@ -533,8 +580,7 @@ Then apply your fraction f:
       const fraction = Number(kellyFractionEl.value);
       const probMode = probModeEl.value;
 
-      stateTableEl.innerHTML = "";
-      nextFillTableEl.innerHTML = "";
+      summaryTableEl.innerHTML = "";
 
       if (!Number.isFinite(bankroll) || bankroll <= 0) {
         setStatus("Bankroll must be > 0.", "error");
@@ -555,34 +601,36 @@ Then apply your fraction f:
         return;
       }
 
-      let pSum = teams.reduce((acc, t) => acc + t.p, 0);
+      let pSum = teams.reduce((acc, t) => acc + t.pRaw, 0);
       if (probMode === "strict") {
         if (Math.abs(pSum - 1) > 0.00001) {
           setStatus(`Probabilities must sum to 100%. Current sum: ${formatNum(pSum * 100, 4)}%.`, "error");
           return;
         }
+        teams.forEach((t) => { t.p = t.pRaw; });
       } else {
         if (pSum <= 0) {
           setStatus("Total probability must be > 0 to normalize.", "error");
           return;
         }
-        teams.forEach((t) => { t.p /= pSum; });
+        teams.forEach((t) => { t.p = t.pRaw / pSum; });
         pSum = 1;
       }
+
+      teams.forEach((t) => {
+        const ev = 1 - t.p - t.noPrice;
+        t.evCell.textContent = formatPct(ev, 2);
+        setSignClass(t.evCell, ev);
+
+        const iqk = independentQKShares(t, bankroll, fraction);
+        t.iqkCell.textContent = formatNum(iqk, 0);
+        t.iqkCell.classList.remove("pos", "neg", "neutral");
+        t.iqkCell.classList.add("mono", "neutral");
+      });
 
       const wealth = computeStateWealths(teams, bankroll);
       const minWealth = Math.min(...wealth);
       const worstIdx = wealth.indexOf(minWealth);
-
-      teams.forEach((t, i) => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${escapeHtml(t.team)}</td>
-          <td class="mono">${formatNum(t.p * 100, 4)}%</td>
-          <td class="mono">${formatNum(wealth[i], 4)}</td>
-        `;
-        stateTableEl.appendChild(tr);
-      });
 
       let blocked = false;
       if (wealth.some((w) => w <= 0)) {
@@ -590,19 +638,33 @@ Then apply your fraction f:
       }
 
       for (let k = 0; k < teams.length; k += 1) {
+        const ev = 1 - teams[k].p - teams[k].noPrice;
         const res = solveIncrementalDelta(teams, wealth, k);
-        const deltaFull = blocked ? 0 : res.deltaFull;
+        const deltaFull = blocked || ev <= 0 ? 0 : res.deltaFull;
         const deltaFrac = fraction * deltaFull;
-        const worstAfterFrac = blocked ? NaN : minWealthAfterDelta(teams, wealth, k, deltaFrac);
+        const bidShares = Math.max(0, Math.round(deltaFrac));
+        const nextWealth = wealthAfterDelta(teams, wealth, k, bidShares);
+        const plIfYes = wealth[k] - bankroll;
+        const plVector = nextWealth.map((w) => w - bankroll);
+        const maxLoss = Math.min(...plVector);
+        const maxWin = Math.max(...plVector);
+        const iqk = independentQKShares(teams[k], bankroll, fraction);
 
+        const plClass = plIfYes > 0 ? "pos" : (plIfYes < 0 ? "neg" : "neutral");
+        const lossClass = maxLoss > 0 ? "pos" : (maxLoss < 0 ? "neg" : "neutral");
+        const winClass = maxWin > 0 ? "pos" : (maxWin < 0 ? "neg" : "neutral");
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${escapeHtml(teams[k].team)}</td>
-          <td class="mono">${formatNum(deltaFull, 6)}</td>
-          <td class="mono">${formatNum(deltaFrac, 6)}</td>
-          <td class="mono">${formatNum(worstAfterFrac, 4)}</td>
+          <td class="mono">${formatNum(teams[k].p * 100, 2)}%</td>
+          <td class="mono ${plClass}">${formatCurrency(plIfYes)}</td>
+          <td class="mono ${ev > 0 ? "pos" : (ev < 0 ? "neg" : "neutral")}">${formatPct(ev, 2)}</td>
+          <td class="mono neutral">${formatNum(iqk, 0)}</td>
+          <td class="mono">${formatBid(bidShares, teams[k].noPrice)}</td>
+          <td class="mono ${lossClass}">${formatCurrency(maxLoss)}</td>
+          <td class="mono ${winClass}">${formatCurrency(maxWin)}</td>
         `;
-        nextFillTableEl.appendChild(tr);
+        summaryTableEl.appendChild(tr);
       }
 
       if (blocked) {
@@ -611,8 +673,8 @@ Then apply your fraction f:
       }
 
       setStatus(
-        `Valid input. Worst current state is ${teams[worstIdx].team} with W_s=${formatNum(minWealth, 4)}. ` +
-        `Recommendations are incremental and recompute after each fill.`,
+        `Valid input. Worst current state is ${teams[worstIdx].team} at ${formatCurrency(minWealth - bankroll)}. ` +
+        `Bids are rounded to full shares and non-positive EV rows are forced to 0.`,
         "ok"
       );
     }
