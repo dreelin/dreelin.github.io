@@ -289,6 +289,24 @@
       color: #065f46;
     }
 
+    tr.drag-over {
+      outline: 2px dashed var(--accent);
+      outline-offset: -2px;
+      background: #ecfdf5;
+    }
+
+    tr.dragging {
+      opacity: 0.4;
+    }
+
+    tr[draggable="true"] {
+      cursor: grab;
+    }
+
+    tr[draggable="true"]:active {
+      cursor: grabbing;
+    }
+
     @media (max-width: 640px) {
       body {
         padding: 12px;
@@ -350,6 +368,7 @@
       <div id="marketWarning" class="warning" style="display:none"></div>
       <div class="btn-row">
         <button id="addRowBtn" type="button" class="btn-warm">Add Team</button>
+        <button id="addFieldBtn" type="button" class="btn-warm">Add Field</button>
         <button id="sampleBtn" type="button">Load Sample</button>
         <button id="clearBtn" type="button" style="background:#fff1f2; border-color:#fca5a5; color:var(--danger);">Clear All</button>
         <button id="recalcBtn" type="button" class="btn-primary">Recalculate</button>
@@ -358,7 +377,7 @@
     </section>
 
     <section class="card">
-      <h2>Teams And Fills</h2>
+      <h2>Teams And Fills <span id="teamCount" style="font-weight:400; font-size:0.88rem; color:var(--muted);"></span></h2>
       <div class="table-wrap">
         <table>
           <thead>
@@ -440,7 +459,9 @@ Then apply your fraction f:
 
     document.getElementById("addRowBtn").addEventListener("click", () => {
       addRow({ team: "", probPct: "", noPrice: "", shares: "0" });
+      updateTeamCount();
     });
+    document.getElementById("addFieldBtn").addEventListener("click", addFieldRow);
 
     document.getElementById("sampleBtn").addEventListener("click", () => {
       clearMarketBanner();
@@ -467,6 +488,7 @@ Then apply your fraction f:
       clearMarketBanner();
       summaryTableEl.innerHTML = "";
       document.getElementById("portfolioSummary").innerHTML = "";
+      updateTeamCount();
       setStatus("Cleared all teams.", "ok");
     });
 
@@ -719,8 +741,16 @@ Then apply your fraction f:
     /* Source tracking: team name → "sharp" | "kalshi" | "both" */
     let teamSources = {};
 
+    function extractQualifier(name) {
+      /* Extract parenthetical qualifier like (FL), (OH) */
+      const m = name.match(/\(([A-Za-z]+)\)/);
+      return m ? m[1].toLowerCase() : null;
+    }
+
     function normalizeTeamName(name) {
       let n = name.toLowerCase().trim();
+      /* Remove parenthetical qualifiers — matched separately */
+      n = n.replace(/\([^)]*\)/g, "");
       /* Expand common abbreviations */
       const abbrevs = [
         [/\bst\b\.?/g, "state"],
@@ -730,26 +760,25 @@ Then apply your fraction f:
         [/\bs\b\.?\s*/g, "south "],
         [/\be\b\.?\s*/g, "east "],
         [/\bw\b\.?\s*/g, "west "],
-        [/\b\(fl\)/g, "florida"],
-        [/\b\(oh\)/g, "ohio"],
-        [/\b\(pa\)/g, "pennsylvania"],
-        [/\b\(ny\)/g, "newyork"],
-        [/\b\(tx\)/g, "texas"],
-        [/\b\(ca\)/g, "california"],
-        [/\bfl\b/g, "florida"],
         [/\buniv\.?\b/g, "university"],
       ];
       for (const [re, rep] of abbrevs) n = n.replace(re, rep);
       return n.replace(/[^a-z0-9]/g, "");
     }
 
-    function findMatch(norm, existing, matched) {
+    function findMatch(norm, normQual, existing, matched) {
       /* Exact normalized match first */
-      let m = existing.find(e => e.norm === norm && !matched.has(e));
+      let m = existing.find(e => e.norm === norm && !matched.has(e) && qualifiersCompatible(normQual, e.qual));
       if (m) return m;
       /* Substring: one contains the other (handles "UConn" vs "Connecticut") */
-      m = existing.find(e => !matched.has(e) && (e.norm.includes(norm) || norm.includes(e.norm)) && Math.min(norm.length, e.norm.length) >= 4);
+      m = existing.find(e => !matched.has(e) && qualifiersCompatible(normQual, e.qual) && (e.norm.includes(norm) || norm.includes(e.norm)) && Math.min(norm.length, e.norm.length) >= 4);
       return m || null;
+    }
+
+    function qualifiersCompatible(q1, q2) {
+      /* If both have qualifiers, they must match */
+      if (q1 && q2) return q1 === q2;
+      return true;
     }
 
     function mergeSharpIntoExisting(sharpResults) {
@@ -758,7 +787,8 @@ Then apply your fraction f:
       const existing = existingRows.map(tr => ({
         tr,
         team: tr.querySelector(".team").value.trim(),
-        norm: normalizeTeamName(tr.querySelector(".team").value.trim())
+        norm: normalizeTeamName(tr.querySelector(".team").value.trim()),
+        qual: extractQualifier(tr.querySelector(".team").value.trim())
       }));
 
       const matched = new Set();
@@ -766,7 +796,8 @@ Then apply your fraction f:
 
       for (const sr of sharpResults) {
         const norm = normalizeTeamName(sr.team);
-        const match = findMatch(norm, existing, matched);
+        const qual = extractQualifier(sr.team);
+        const match = findMatch(norm, qual, existing, matched);
         if (match) {
           matched.add(match);
           /* Update probability from fair value */
@@ -798,7 +829,9 @@ Then apply your fraction f:
       if (unmatched.length > 0) {
         showMarketWarning(`${unmatched.length} sharp team(s) had no Kalshi match: ${unmatched.map(u => u.team).join(", ")}`);
       }
+      sortRowsBySource();
       updateSourceFlags();
+      setupDragMerge();
     }
 
     function mergeKalshiIntoExisting(kalshiRows) {
@@ -807,7 +840,8 @@ Then apply your fraction f:
       const existing = existingRows.map(tr => ({
         tr,
         team: tr.querySelector(".team").value.trim(),
-        norm: normalizeTeamName(tr.querySelector(".team").value.trim())
+        norm: normalizeTeamName(tr.querySelector(".team").value.trim()),
+        qual: extractQualifier(tr.querySelector(".team").value.trim())
       }));
 
       const matched = new Set();
@@ -815,7 +849,8 @@ Then apply your fraction f:
 
       for (const kr of kalshiRows) {
         const norm = normalizeTeamName(kr.team);
-        const match = findMatch(norm, existing, matched);
+        const qual = extractQualifier(kr.team);
+        const match = findMatch(norm, qual, existing, matched);
         if (match) {
           matched.add(match);
           /* Fill in NO price from Kalshi */
@@ -844,7 +879,9 @@ Then apply your fraction f:
       if (unmatched.length > 0) {
         showMarketWarning(`${unmatched.length} Kalshi team(s) had no sharp match: ${unmatched.map(u => u.team).join(", ")}`);
       }
+      sortRowsBySource();
       updateSourceFlags();
+      setupDragMerge();
     }
 
     function updateSourceFlags() {
@@ -876,6 +913,141 @@ Then apply your fraction f:
         }
         td.appendChild(flag);
       }
+      updateTeamCount();
+    }
+
+    function updateTeamCount() {
+      const total = rowsEl.querySelectorAll("tr").length;
+      const el = document.getElementById("teamCount");
+      el.textContent = total > 0 ? `(${total})` : "";
+    }
+
+    function sortRowsBySource() {
+      const rows = [...rowsEl.querySelectorAll("tr")];
+      const order = { both: 0, "": 1, sharp: 2, kalshi: 2 };
+      rows.sort((a, b) => {
+        const sa = a.dataset.source || "";
+        const sb = b.dataset.source || "";
+        return (order[sa] ?? 1) - (order[sb] ?? 1);
+      });
+      rows.forEach(tr => rowsEl.appendChild(tr));
+    }
+
+    /* ── Drag-and-drop manual merge ── */
+
+    function setupDragMerge() {
+      const rows = [...rowsEl.querySelectorAll("tr")];
+      for (const tr of rows) {
+        const src = tr.dataset.source || "";
+        if (src === "sharp" || src === "kalshi") {
+          tr.draggable = true;
+          tr.addEventListener("dragstart", onDragStart);
+          tr.addEventListener("dragend", onDragEnd);
+        } else {
+          tr.draggable = false;
+          tr.removeEventListener("dragstart", onDragStart);
+          tr.removeEventListener("dragend", onDragEnd);
+        }
+        tr.addEventListener("dragover", onDragOver);
+        tr.addEventListener("dragleave", onDragLeave);
+        tr.addEventListener("drop", onDrop);
+      }
+    }
+
+    let draggedRow = null;
+
+    function onDragStart(e) {
+      draggedRow = this;
+      this.classList.add("dragging");
+      e.dataTransfer.effectAllowed = "move";
+    }
+
+    function onDragEnd() {
+      this.classList.remove("dragging");
+      for (const tr of rowsEl.querySelectorAll(".drag-over")) {
+        tr.classList.remove("drag-over");
+      }
+      draggedRow = null;
+    }
+
+    function onDragOver(e) {
+      if (!draggedRow || draggedRow === this) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      this.classList.add("drag-over");
+    }
+
+    function onDragLeave() {
+      this.classList.remove("drag-over");
+    }
+
+    function onDrop(e) {
+      e.preventDefault();
+      this.classList.remove("drag-over");
+      if (!draggedRow || draggedRow === this) return;
+
+      const target = this;
+      const dragged = draggedRow;
+
+      /* Fill blank fields in the target from the dragged row */
+      const fields = [".probPct", ".noPrice", ".shares"];
+      for (const sel of fields) {
+        const tInput = target.querySelector(sel);
+        const dInput = dragged.querySelector(sel);
+        if ((!tInput.value || tInput.value === "0") && dInput.value && dInput.value !== "0") {
+          tInput.value = dInput.value;
+        }
+      }
+
+      /* If target team is blank, take from dragged */
+      const tTeam = target.querySelector(".team");
+      const dTeam = dragged.querySelector(".team");
+      if (!tTeam.value.trim() && dTeam.value.trim()) {
+        tTeam.value = dTeam.value;
+      }
+
+      /* Mark target as merged */
+      const tName = tTeam.value.trim();
+      teamSources[tName] = "both";
+      target.dataset.source = "both";
+
+      /* Remove dragged row */
+      const dName = dTeam.value.trim();
+      delete teamSources[dName];
+      dragged.remove();
+      draggedRow = null;
+
+      sortRowsBySource();
+      updateSourceFlags();
+      setupDragMerge();
+      recalculate();
+    }
+
+    /* ── Add Field ── */
+
+    function addFieldRow() {
+      /* Calculate remaining probability */
+      let pSum = 0;
+      for (const tr of rowsEl.querySelectorAll("tr")) {
+        const v = Number(tr.querySelector(".probPct").value);
+        const team = tr.querySelector(".team").value.trim().toLowerCase();
+        if (team === "field") continue; /* skip existing Field row */
+        if (Number.isFinite(v) && v > 0) pSum += v;
+      }
+      const remaining = Math.max(0, 100 - pSum);
+
+      /* Check if Field row already exists */
+      for (const tr of rowsEl.querySelectorAll("tr")) {
+        if (tr.querySelector(".team").value.trim().toLowerCase() === "field") {
+          tr.querySelector(".probPct").value = remaining.toFixed(2);
+          recalculate();
+          return;
+        }
+      }
+
+      addRow({ team: "Field", probPct: remaining.toFixed(2), noPrice: "", shares: 0 });
+      updateTeamCount();
+      recalculate();
     }
 
     [bankrollEl, kellyFractionEl, probModeEl].forEach((el) => {
@@ -903,6 +1075,7 @@ Then apply your fraction f:
 
       tr.querySelector(".deleteBtn").addEventListener("click", () => {
         tr.remove();
+        updateTeamCount();
         recalculate();
       });
 
@@ -1308,6 +1481,7 @@ Then apply your fraction f:
     addRow({ team: "Team A", probPct: 20, noPrice: 0.75, shares: 0 });
     addRow({ team: "Team B", probPct: 18, noPrice: 0.78, shares: 0 });
     addRow({ team: "Field", probPct: 62, noPrice: 0.33, shares: 0 });
+    updateTeamCount();
     recalculate();
   </script>
 </body>
