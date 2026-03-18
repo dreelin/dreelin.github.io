@@ -282,13 +282,15 @@
         </label>
         <div style="grid-column: 1 / -1; margin-top: 4px; display: grid; gap: 8px;">
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <span style="font-size:0.9rem; color:var(--muted);">1. Copy API link:</span>
+            <button id="fetchBtn" type="button" class="btn-primary" style="white-space:nowrap;">Fetch from Kalshi</button>
             <code id="kalshiApiLink" style="font-family:monospace; background:#f5f0e8; padding:3px 8px; border-radius:6px; word-break:break-all; font-size:0.82rem; flex:1; min-width:200px;"></code>
-            <button id="copyUrlBtn" type="button" class="btn-warm" style="white-space:nowrap;">Copy URL</button>
+            <button id="openUrlBtn" type="button" class="btn-warm" style="white-space:nowrap;">Open in New Tab</button>
           </div>
-          <div style="font-size:0.9rem; color:var(--muted);">2. Open that URL in a new tab, select all (Ctrl+A), copy (Ctrl+C), paste below:</div>
-          <textarea id="jsonPasteArea" rows="3" style="width:100%; font-family:monospace; font-size:0.82rem; border:1px solid var(--line); border-radius:10px; padding:8px; resize:vertical;" placeholder="Paste the full API JSON response here..."></textarea>
-          <div><button id="parseJsonBtn" type="button" class="btn-primary">Load From Pasted JSON</button></div>
+          <div id="manualPasteSection" style="display:none; gap:8px;">
+            <div style="font-size:0.9rem; color:var(--muted);">Auto-fetch failed. Open the link above, copy all (Ctrl+A, Ctrl+C), paste below:</div>
+            <textarea id="jsonPasteArea" rows="3" style="width:100%; font-family:monospace; font-size:0.82rem; border:1px solid var(--line); border-radius:10px; padding:8px; resize:vertical;" placeholder="Paste the full API JSON response here..."></textarea>
+            <div><button id="parseJsonBtn" type="button" class="btn-primary">Load From Pasted JSON</button></div>
+          </div>
         </div>
         <label>
           Bankroll (W0)
@@ -413,30 +415,54 @@ Then apply your fraction f:
     document.getElementById("recalcBtn").addEventListener("click", recalculate);
     kalshiInputEl.addEventListener("input", updateApiLink);
     document.getElementById("parseJsonBtn").addEventListener("click", parsePastedJson);
-    document.getElementById("copyUrlBtn").addEventListener("click", copyApiUrl);
+    document.getElementById("openUrlBtn").addEventListener("click", openApiUrl);
+    document.getElementById("fetchBtn").addEventListener("click", fetchKalshi);
+
+    function getApiUrl() {
+      const ticker = extractEventTicker(kalshiInputEl.value);
+      return ticker
+        ? `https://api.elections.kalshi.com/trade-api/v2/events/${ticker}?with_nested_markets=true`
+        : null;
+    }
 
     function updateApiLink() {
-      const ticker = extractEventTicker(kalshiInputEl.value);
       const el = document.getElementById("kalshiApiLink");
-      if (ticker) {
-        el.textContent = `https://api.elections.kalshi.com/trade-api/v2/events/${ticker}?with_nested_markets=true`;
-      } else {
-        el.textContent = "Enter a ticker or URL above first.";
-      }
+      const url = getApiUrl();
+      el.textContent = url || "Enter a ticker or URL above first.";
     }
     updateApiLink();
 
-    function copyApiUrl() {
-      const text = document.getElementById("kalshiApiLink").textContent;
-      if (!text || text.startsWith("Enter")) {
-        setStatus("Enter a ticker above first.", "error");
-        return;
+    function openApiUrl() {
+      const url = getApiUrl();
+      if (!url) { setStatus("Enter a ticker above first.", "error"); return; }
+      window.open(url, "_blank", "noopener");
+    }
+
+    async function fetchKalshi() {
+      const url = getApiUrl();
+      if (!url) { setStatus("Enter a ticker above first.", "error"); return; }
+      const btn = document.getElementById("fetchBtn");
+      btn.disabled = true;
+      btn.textContent = "Fetching\u2026";
+      setStatus("Fetching from Kalshi API\u2026", "ok");
+      const manualSection = document.getElementById("manualPasteSection");
+      manualSection.style.display = "none";
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 3000);
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timeout);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const payload = await res.json();
+        populateFromPayload(payload);
+      } catch (err) {
+        const reason = err.name === "AbortError" ? "timed out after 3 s" : err.message;
+        setStatus(`Auto-fetch failed (${reason}). Use manual paste below, or open the link in a new tab.`, "error");
+        manualSection.style.display = "grid";
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "Fetch from Kalshi";
       }
-      navigator.clipboard.writeText(text).then(() => {
-        const btn = document.getElementById("copyUrlBtn");
-        btn.textContent = "Copied!";
-        setTimeout(() => { btn.textContent = "Copy URL"; }, 1500);
-      });
     }
 
     function parsePastedJson() {
@@ -606,75 +632,104 @@ Then apply your fraction f:
       return wealth;
     }
 
-    /* Joint portfolio Kelly: coordinate-descent over all teams simultaneously.
-       Finds the full-Kelly optimal shares vector from scratch (ignoring current
-       fills), so that the recommended bids converge in one step. */
+    /*  Joint portfolio Kelly with budget constraint.
+     *  max  sum_s p_s ln(W_s)   s.t. sum x_i*n_i <= bankroll,  x_i >= 0
+     *
+     *  KKT: for each active team k, grad_k = lambda * n_k.
+     *  Outer loop: bisect on lambda (shadow price of capital).
+     *  Inner loop: coordinate descent  (converges because lambda > 0
+     *              removes the risk-free arb that caused divergence).
+     */
     function solveJointKelly(teams, bankroll) {
       const n = teams.length;
-      const target = new Array(n).fill(0);
 
-      for (let iter = 0; iter < 60; iter += 1) {
-        let maxChange = 0;
-
-        for (let k = 0; k < n; k += 1) {
-          if (1 - teams[k].p - teams[k].noPrice <= 0) {
-            maxChange = Math.max(maxChange, target[k]);
-            target[k] = 0;
-            continue;
-          }
-
-          const nk = teams[k].noPrice;
-          // Build base wealth in each state excluding team k's shares
-          const bw = [];
-          for (let s = 0; s < n; s += 1) {
-            let w = bankroll;
-            for (let i = 0; i < n; i += 1) {
-              if (i === k) continue;
-              w += target[i] * (s === i ? -teams[i].noPrice : (1 - teams[i].noPrice));
+      /* Inner CD: find full-Kelly targets for a given lambda. */
+      function innerCD(lam) {
+        const target = new Array(n).fill(0);
+        for (let iteration = 0; iteration < 120; iteration += 1) {
+          let maxChange = 0;
+          for (let k = 0; k < n; k += 1) {
+            if (1 - teams[k].p - teams[k].noPrice <= 0) {
+              maxChange = Math.max(maxChange, target[k]);
+              target[k] = 0;
+              continue;
             }
-            bw.push(w);
-          }
-
-          if (bw.some((w) => !Number.isFinite(w) || w <= 0)) {
-            maxChange = Math.max(maxChange, target[k]);
-            target[k] = 0;
-            continue;
-          }
-
-          function deriv(x) {
-            let d = -teams[k].p * nk / (bw[k] - nk * x);
+            const nk = teams[k].noPrice;
+            const bw = [];
             for (let s = 0; s < n; s += 1) {
-              if (s === k) continue;
-              d += teams[s].p * (1 - nk) / (bw[s] + (1 - nk) * x);
+              let w = bankroll;
+              for (let i = 0; i < n; i += 1) {
+                if (i === k) continue;
+                w += target[i] * (s === i ? -teams[i].noPrice : (1 - teams[i].noPrice));
+              }
+              bw.push(w);
             }
-            return d;
+            if (bw.some((w) => !Number.isFinite(w) || w <= 0)) {
+              maxChange = Math.max(maxChange, target[k]);
+              target[k] = 0;
+              continue;
+            }
+            const targetGrad = lam * nk;
+            const gradK = (x) => {
+              let d = -teams[k].p * nk / (bw[k] - nk * x);
+              for (let s = 0; s < n; s += 1) {
+                if (s === k) continue;
+                d += teams[s].p * (1 - nk) / (bw[s] + (1 - nk) * x);
+              }
+              return d;
+            };
+            const g0 = gradK(0);
+            if (!Number.isFinite(g0) || g0 <= targetGrad) {
+              maxChange = Math.max(maxChange, target[k]);
+              target[k] = 0;
+              continue;
+            }
+            let high = (bw[k] / nk) * 0.999;
+            let low = 0;
+            for (let b = 0; b < 80; b += 1) {
+              const mid = (low + high) / 2;
+              const gm = gradK(mid);
+              if (!Number.isFinite(gm)) { high = mid; continue; }
+              if (gm > targetGrad) low = mid; else high = mid;
+            }
+            const opt = Math.max(0, (low + high) / 2);
+            maxChange = Math.max(maxChange, Math.abs(opt - target[k]));
+            target[k] = opt;
           }
-
-          const d0 = deriv(0);
-          if (!Number.isFinite(d0) || d0 <= 0) {
-            maxChange = Math.max(maxChange, target[k]);
-            target[k] = 0;
-            continue;
-          }
-
-          let high = (bw[k] / nk) * 0.999;
-          let low = 0;
-          for (let b = 0; b < 80; b += 1) {
-            const mid = (low + high) / 2;
-            const dm = deriv(mid);
-            if (!Number.isFinite(dm)) { high = mid; continue; }
-            if (dm > 0) low = mid; else high = mid;
-          }
-
-          const opt = Math.max(0, (low + high) / 2);
-          maxChange = Math.max(maxChange, Math.abs(opt - target[k]));
-          target[k] = opt;
+          if (maxChange < 0.01) break;
         }
-
-        if (maxChange < 0.01) break;
+        return target;
       }
 
-      return target;
+      function totalCost(x) {
+        let c = 0;
+        for (let i = 0; i < n; i += 1) c += x[i] * teams[i].noPrice;
+        return c;
+      }
+
+      /* If no arb (sum of NO prices >= N-1), try unconstrained first. */
+      let noSum = 0;
+      for (let i = 0; i < n; i += 1) noSum += teams[i].noPrice;
+      const hasArb = noSum < n - 1;
+
+      if (!hasArb) {
+        const xUnc = innerCD(0);
+        if (totalCost(xUnc) <= bankroll) return xUnc;
+      }
+
+      /* Budget must bind.  Bisect on lambda. */
+      let loLam = 0;
+      let hiLam = 0.001;
+      for (let i = 0; i < 50; i += 1) {
+        if (totalCost(innerCD(hiLam)) <= bankroll) break;
+        hiLam *= 2;
+      }
+      for (let i = 0; i < 60; i += 1) {
+        const midLam = (loLam + hiLam) / 2;
+        if (totalCost(innerCD(midLam)) > bankroll) loLam = midLam;
+        else hiLam = midLam;
+      }
+      return innerCD((loLam + hiLam) / 2);
     }
 
     function formatNum(v, d = 4) {
@@ -839,9 +894,14 @@ Then apply your fraction f:
         `best case <span class="${winClass}">${formatCurrency(portfolioMaxWin)}</span>`;
 
       const totalCost = bidShares.reduce((sum, b, i) => sum + b * teams[i].noPrice, 0);
+      let noSum = 0;
+      for (let i = 0; i < teams.length; i += 1) noSum += teams[i].noPrice;
+      const arbNote = noSum < teams.length - 1
+        ? ` NO prices sum to ${formatNum(noSum, 2)} < ${teams.length - 1} \u2014 arb exists, budget binds at full Kelly.`
+        : "";
       setStatus(
         `Worst current state: ${teams[worstIdx].team} at ${formatCurrency(minWealth - bankroll)}. ` +
-        `Total bid outlay: ${formatCurrency(-totalCost).replace("+", "")}. Bids are jointly optimal — fill all to reach QK target in one step.`,
+        `Bid outlay: ${formatCurrency(-totalCost).replace("+", "")}.${arbNote}`,
         "ok"
       );
     }
@@ -857,7 +917,7 @@ Then apply your fraction f:
 
     addRow({ team: "Team A", probPct: 20, noPrice: 0.75, shares: 0 });
     addRow({ team: "Team B", probPct: 18, noPrice: 0.78, shares: 0 });
-    addRow({ team: "Field", probPct: 62, noPrice: 0.35, shares: 0 });
+    addRow({ team: "Field", probPct: 62, noPrice: 0.33, shares: 0 });
     recalculate();
   </script>
 </body>
