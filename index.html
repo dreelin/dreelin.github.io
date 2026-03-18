@@ -507,16 +507,8 @@ Then apply your fraction f:
 
       try {
         const endpoint = `https://api.elections.kalshi.com/trade-api/v2/events/${encodeURIComponent(ticker)}?with_nested_markets=true`;
-        const response = await fetch(endpoint, {
-          method: "GET",
-          headers: { Accept: "application/json" }
-        });
-
-        if (!response.ok) {
-          throw new Error(`HTTP ${response.status}`);
-        }
-
-        const payload = await response.json();
+        const fetchResult = await fetchJsonWithFallback(endpoint);
+        const payload = fetchResult.payload;
         const eventData = payload?.event;
         if (!eventData) {
           throw new Error("Missing event payload");
@@ -556,6 +548,9 @@ Then apply your fraction f:
         if (eventData.mutually_exclusive !== true) {
           showMarketWarning("Warning: event.mutually_exclusive is not true. Calculator still loaded markets.");
         }
+        if (fetchResult.source !== "direct") {
+          showMarketWarning(`Loaded via CORS relay (${fetchResult.source}) because direct API access was blocked.`);
+        }
 
         setStatus(`Loaded ${rows.length} markets from Kalshi event ${ticker}. Update probabilities before betting.`, "ok");
         recalculate();
@@ -565,6 +560,48 @@ Then apply your fraction f:
       } finally {
         loadKalshiBtn.disabled = false;
       }
+    }
+
+    async function fetchJsonWithFallback(endpoint) {
+      const attempts = [
+        {
+          source: "direct",
+          url: endpoint,
+          options: { method: "GET", headers: { Accept: "application/json" } }
+        },
+        {
+          source: "allorigins",
+          url: `https://api.allorigins.win/raw?url=${encodeURIComponent(endpoint)}`,
+          options: { method: "GET", headers: { Accept: "application/json" } }
+        },
+        {
+          source: "corsproxy",
+          url: `https://corsproxy.io/?${encodeURIComponent(endpoint)}`,
+          options: { method: "GET", headers: { Accept: "application/json" } }
+        }
+      ];
+
+      const errors = [];
+      for (const attempt of attempts) {
+        try {
+          const response = await fetch(attempt.url, attempt.options);
+          if (!response.ok) {
+            errors.push(`${attempt.source}: HTTP ${response.status}`);
+            continue;
+          }
+          const payload = await response.json();
+          if (!payload || typeof payload !== "object") {
+            errors.push(`${attempt.source}: invalid JSON payload`);
+            continue;
+          }
+          return { payload, source: attempt.source };
+        } catch (err) {
+          const msg = err && err.message ? err.message : "request failed";
+          errors.push(`${attempt.source}: ${msg}`);
+        }
+      }
+
+      throw new Error(`All fetch attempts failed (${errors.join(" | ")})`);
     }
 
     function parseRows() {
