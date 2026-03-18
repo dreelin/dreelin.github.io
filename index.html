@@ -340,26 +340,26 @@
     </section>
 
     <section class="card">
-      <h2>State + Next Bid Summary</h2>
+      <h2>Optimal Joint Bid Summary</h2>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Team</th>
               <th>Win Prob</th>
-              <th>P/L If YES</th>
+              <th>Current P/L</th>
               <th>EV Per Share</th>
-              <th>Independent QK</th>
+              <th>Indep. QK</th>
               <th>Bid</th>
-              <th>Max Loss</th>
-              <th>Max Win</th>
+              <th>Post-Bid P/L</th>
             </tr>
           </thead>
           <tbody id="summaryTable"></tbody>
         </table>
       </div>
+      <div id="portfolioSummary" class="small-note"></div>
       <p class="small-note">
-        Bid uses rounded fractional Kelly shares and is forced to 0 for non-positive EV rows.
+        Bids are jointly optimal — filling all at once reaches the target in one step. Non-positive EV rows are forced to 0.
       </p>
     </section>
 
@@ -606,90 +606,75 @@ Then apply your fraction f:
       return wealth;
     }
 
-    function derivativeDelta(teams, wealth, k, dq) {
-      const nk = teams[k].noPrice;
-      let total = -teams[k].p * nk / (wealth[k] - nk * dq);
-      for (let s = 0; s < teams.length; s += 1) {
-        if (s === k) continue;
-        total += teams[s].p * (1 - nk) / (wealth[s] + (1 - nk) * dq);
-      }
-      return total;
-    }
+    /* Joint portfolio Kelly: coordinate-descent over all teams simultaneously.
+       Finds the full-Kelly optimal shares vector from scratch (ignoring current
+       fills), so that the recommended bids converge in one step. */
+    function solveJointKelly(teams, bankroll) {
+      const n = teams.length;
+      const target = new Array(n).fill(0);
 
-    function solveTargetTotalShares(teams, wealth, k) {
-      const currentShares = teams[k].shares;
-      const nk = teams[k].noPrice;
-      const baseWealth = [];
+      for (let iter = 0; iter < 60; iter += 1) {
+        let maxChange = 0;
 
-      for (let s = 0; s < teams.length; s += 1) {
-        const r = s === k ? -nk : (1 - nk);
-        baseWealth.push(wealth[s] - currentShares * r);
-      }
+        for (let k = 0; k < n; k += 1) {
+          if (1 - teams[k].p - teams[k].noPrice <= 0) {
+            maxChange = Math.max(maxChange, target[k]);
+            target[k] = 0;
+            continue;
+          }
 
-      function derivativeTotal(x) {
-        let total = -teams[k].p * nk / (baseWealth[k] - nk * x);
-        for (let s = 0; s < teams.length; s += 1) {
-          if (s === k) continue;
-          total += teams[s].p * (1 - nk) / (baseWealth[s] + (1 - nk) * x);
+          const nk = teams[k].noPrice;
+          // Build base wealth in each state excluding team k's shares
+          const bw = [];
+          for (let s = 0; s < n; s += 1) {
+            let w = bankroll;
+            for (let i = 0; i < n; i += 1) {
+              if (i === k) continue;
+              w += target[i] * (s === i ? -teams[i].noPrice : (1 - teams[i].noPrice));
+            }
+            bw.push(w);
+          }
+
+          if (bw.some((w) => !Number.isFinite(w) || w <= 0)) {
+            maxChange = Math.max(maxChange, target[k]);
+            target[k] = 0;
+            continue;
+          }
+
+          function deriv(x) {
+            let d = -teams[k].p * nk / (bw[k] - nk * x);
+            for (let s = 0; s < n; s += 1) {
+              if (s === k) continue;
+              d += teams[s].p * (1 - nk) / (bw[s] + (1 - nk) * x);
+            }
+            return d;
+          }
+
+          const d0 = deriv(0);
+          if (!Number.isFinite(d0) || d0 <= 0) {
+            maxChange = Math.max(maxChange, target[k]);
+            target[k] = 0;
+            continue;
+          }
+
+          let high = (bw[k] / nk) * 0.999;
+          let low = 0;
+          for (let b = 0; b < 80; b += 1) {
+            const mid = (low + high) / 2;
+            const dm = deriv(mid);
+            if (!Number.isFinite(dm)) { high = mid; continue; }
+            if (dm > 0) low = mid; else high = mid;
+          }
+
+          const opt = Math.max(0, (low + high) / 2);
+          maxChange = Math.max(maxChange, Math.abs(opt - target[k]));
+          target[k] = opt;
         }
-        return total;
+
+        if (maxChange < 0.01) break;
       }
 
-      if (!Number.isFinite(baseWealth[k]) || baseWealth[k] <= 0) {
-        return { targetFull: 0, reason: "W_k base must be > 0" };
-      }
-
-      for (let s = 0; s < baseWealth.length; s += 1) {
-        if (!Number.isFinite(baseWealth[s]) || baseWealth[s] <= 0) {
-          return { targetFull: 0, reason: "All base W_s must be > 0" };
-        }
-      }
-
-      const d0 = derivativeTotal(0);
-      if (!Number.isFinite(d0) || d0 <= 0) {
-        return { targetFull: 0, reason: "No positive Kelly edge at x=0" };
-      }
-
-      let high = (baseWealth[k] / nk) * 0.999999;
-      if (!Number.isFinite(high) || high <= 0) {
-        return { targetFull: 0, reason: "No feasible upper bound" };
-      }
-
-      let dHigh = derivativeTotal(high);
-      if (!Number.isFinite(dHigh)) {
-        high *= 0.5;
-        dHigh = derivativeTotal(high);
-      }
-
-      if (!Number.isFinite(dHigh)) {
-        return { targetFull: 0, reason: "Numerical instability" };
-      }
-
-      let low = 0;
-      for (let iter = 0; iter < 80; iter += 1) {
-        const mid = 0.5 * (low + high);
-        const dMid = derivativeTotal(mid);
-        if (!Number.isFinite(dMid)) {
-          high = mid;
-          continue;
-        }
-        if (dMid > 0) {
-          low = mid;
-        } else {
-          high = mid;
-        }
-      }
-
-      return { targetFull: 0.5 * (low + high), reason: "ok" };
-    }
-
-    function wealthAfterDelta(teams, wealth, k, dq) {
-      const nk = teams[k].noPrice;
-      const nextWealth = [];
-      for (let s = 0; s < teams.length; s += 1) {
-        nextWealth.push(s === k ? wealth[s] - nk * dq : wealth[s] + (1 - nk) * dq);
-      }
-      return nextWealth;
+      return target;
     }
 
     function formatNum(v, d = 4) {
@@ -797,28 +782,43 @@ Then apply your fraction f:
       const minWealth = Math.min(...wealth);
       const worstIdx = wealth.indexOf(minWealth);
 
-      let blocked = false;
       if (wealth.some((w) => w <= 0)) {
-        blocked = true;
+        setStatus("One or more state wealth values are <= 0. Kelly log objective is undefined until all W_s > 0.", "error");
+        return;
       }
+
+      // Solve jointly-optimal full-Kelly shares for all teams simultaneously
+      const fullTargets = solveJointKelly(teams, bankroll);
+
+      // Compute per-team bids and post-all-bids wealth
+      const bidShares = [];
+      for (let k = 0; k < teams.length; k += 1) {
+        const raw = fraction * fullTargets[k] - teams[k].shares;
+        bidShares.push(Math.max(0, Math.round(raw)));
+      }
+
+      // Post-bid wealth in each state (after ALL bids fill)
+      const postBidWealth = new Array(teams.length).fill(bankroll);
+      for (let s = 0; s < teams.length; s += 1) {
+        for (let i = 0; i < teams.length; i += 1) {
+          const totalShares = teams[i].shares + bidShares[i];
+          const r = s === i ? -teams[i].noPrice : (1 - teams[i].noPrice);
+          postBidWealth[s] += totalShares * r;
+        }
+      }
+
+      const postBidPL = postBidWealth.map((w) => w - bankroll);
+      const portfolioMaxLoss = Math.min(...postBidPL);
+      const portfolioMaxWin = Math.max(...postBidPL);
 
       for (let k = 0; k < teams.length; k += 1) {
         const ev = 1 - teams[k].p - teams[k].noPrice;
-        const res = solveTargetTotalShares(teams, wealth, k);
-        const fullTargetShares = blocked || ev <= 0 ? 0 : res.targetFull;
-        const fractionalTargetShares = fraction * fullTargetShares;
-        const rawBidShares = fractionalTargetShares - teams[k].shares;
-        const bidShares = Math.max(0, Math.round(rawBidShares));
-        const nextWealth = wealthAfterDelta(teams, wealth, k, bidShares);
         const plIfYes = wealth[k] - bankroll;
-        const plVector = nextWealth.map((w) => w - bankroll);
-        const maxLoss = Math.min(...plVector);
-        const maxWin = Math.max(...plVector);
+        const postPL = postBidWealth[k] - bankroll;
         const iqk = independentQKShares(teams[k], bankroll, fraction);
 
         const plClass = plIfYes > 0 ? "pos" : (plIfYes < 0 ? "neg" : "neutral");
-        const lossClass = maxLoss > 0 ? "pos" : (maxLoss < 0 ? "neg" : "neutral");
-        const winClass = maxWin > 0 ? "pos" : (maxWin < 0 ? "neg" : "neutral");
+        const postClass = postPL > 0 ? "pos" : (postPL < 0 ? "neg" : "neutral");
         const tr = document.createElement("tr");
         tr.innerHTML = `
           <td>${escapeHtml(teams[k].team)}</td>
@@ -826,21 +826,22 @@ Then apply your fraction f:
           <td class="mono ${plClass}">${formatCurrency(plIfYes)}</td>
           <td class="mono ${ev > 0 ? "pos" : (ev < 0 ? "neg" : "neutral")}">${formatPct(ev, 2)}</td>
           <td class="mono neutral">${formatNum(iqk, 0)}</td>
-          <td class="mono">${formatBid(bidShares, teams[k].noPrice)}</td>
-          <td class="mono ${lossClass}">${formatCurrency(maxLoss)}</td>
-          <td class="mono ${winClass}">${formatCurrency(maxWin)}</td>
+          <td class="mono">${formatBid(bidShares[k], teams[k].noPrice)}</td>
+          <td class="mono ${postClass}">${formatCurrency(postPL)}</td>
         `;
         summaryTableEl.appendChild(tr);
       }
 
-      if (blocked) {
-        setStatus("One or more state wealth values are <= 0. Kelly log objective is undefined until all W_s > 0.", "error");
-        return;
-      }
+      const lossClass = portfolioMaxLoss >= 0 ? "pos" : "neg";
+      const winClass = portfolioMaxWin >= 0 ? "pos" : "neg";
+      document.getElementById("portfolioSummary").innerHTML =
+        `After all bids fill: worst case <span class="${lossClass}">${formatCurrency(portfolioMaxLoss)}</span> · ` +
+        `best case <span class="${winClass}">${formatCurrency(portfolioMaxWin)}</span>`;
 
+      const totalCost = bidShares.reduce((sum, b, i) => sum + b * teams[i].noPrice, 0);
       setStatus(
-        `Valid input. Worst current state is ${teams[worstIdx].team} at ${formatCurrency(minWealth - bankroll)}. ` +
-        `Bids now move toward a single QK target (not repeated QK on remaining size), and non-positive EV rows are forced to 0.`,
+        `Worst current state: ${teams[worstIdx].team} at ${formatCurrency(minWealth - bankroll)}. ` +
+        `Total bid outlay: ${formatCurrency(-totalCost).replace("+", "")}. Bids are jointly optimal — fill all to reach QK target in one step.`,
         "ok"
       );
     }
