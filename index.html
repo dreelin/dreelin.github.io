@@ -88,6 +88,28 @@
       margin-top: 14px;
     }
 
+    .market-loader {
+      display: grid;
+      align-content: end;
+    }
+
+    .market-title {
+      margin-top: 10px;
+      font-size: 0.95rem;
+      color: var(--ink);
+      font-weight: 600;
+    }
+
+    .warning {
+      margin-top: 8px;
+      padding: 9px 11px;
+      border-radius: 10px;
+      border: 1px solid #fcd34d;
+      background: #fffbeb;
+      color: #92400e;
+      font-size: 0.9rem;
+    }
+
     label {
       font-size: 0.9rem;
       color: var(--muted);
@@ -246,6 +268,10 @@
       .card {
         padding: 14px;
       }
+
+      .market-loader {
+        display: block;
+      }
     }
   </style>
 </head>
@@ -258,6 +284,13 @@
         The calculator recomputes incremental full Kelly and your Kelly fraction (for example, quarter Kelly) for each next fill.
       </p>
       <div class="meta">
+        <label>
+          Kalshi Market (URL or event ticker)
+          <input id="kalshiInput" type="text" placeholder="https://kalshi.com/events/.../KX... or KX..." />
+        </label>
+        <div class="market-loader">
+          <button id="loadKalshiBtn" type="button" class="btn-primary">Load Kalshi Event</button>
+        </div>
         <label>
           Bankroll (W0)
           <input id="bankroll" type="number" min="0.01" step="0.01" value="10000" />
@@ -274,6 +307,8 @@
           </select>
         </label>
       </div>
+      <div id="marketTitle" class="market-title"></div>
+      <div id="marketWarning" class="warning" style="display:none"></div>
       <div class="btn-row">
         <button id="addRowBtn" type="button" class="btn-warm">Add Team</button>
         <button id="sampleBtn" type="button">Load Sample</button>
@@ -349,7 +384,11 @@ Then apply your fraction f:
     const rowsEl = document.getElementById("rows");
     const summaryTableEl = document.getElementById("summaryTable");
     const statusEl = document.getElementById("status");
+    const marketTitleEl = document.getElementById("marketTitle");
+    const marketWarningEl = document.getElementById("marketWarning");
 
+    const kalshiInputEl = document.getElementById("kalshiInput");
+    const loadKalshiBtn = document.getElementById("loadKalshiBtn");
     const bankrollEl = document.getElementById("bankroll");
     const kellyFractionEl = document.getElementById("kellyFraction");
     const probModeEl = document.getElementById("probMode");
@@ -359,6 +398,7 @@ Then apply your fraction f:
     });
 
     document.getElementById("sampleBtn").addEventListener("click", () => {
+      clearMarketBanner();
       rowsEl.innerHTML = "";
       const sample = [
         { team: "Duke", probPct: 17, noPrice: 0.79, shares: 55 },
@@ -373,6 +413,13 @@ Then apply your fraction f:
     });
 
     document.getElementById("recalcBtn").addEventListener("click", recalculate);
+    loadKalshiBtn.addEventListener("click", loadKalshiEvent);
+    kalshiInputEl.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        loadKalshiEvent();
+      }
+    });
 
     [bankrollEl, kellyFractionEl, probModeEl].forEach((el) => {
       el.addEventListener("input", recalculate);
@@ -406,6 +453,118 @@ Then apply your fraction f:
 
     function escapeAttr(value) {
       return String(value).replace(/"/g, "&quot;");
+    }
+
+    function extractEventTicker(rawInput) {
+      const text = String(rawInput || "").trim();
+      if (!text) return "";
+
+      let candidate = text;
+      if (/^https?:\/\//i.test(text)) {
+        try {
+          const url = new URL(text);
+          const parts = url.pathname.split("/").filter(Boolean);
+          candidate = parts.length ? parts[parts.length - 1] : "";
+        } catch (_err) {
+          candidate = text;
+        }
+      }
+
+      return candidate.toUpperCase();
+    }
+
+    function clearMarketBanner() {
+      marketTitleEl.textContent = "";
+      marketWarningEl.style.display = "none";
+      marketWarningEl.textContent = "";
+    }
+
+    function showMarketWarning(message) {
+      marketWarningEl.textContent = message;
+      marketWarningEl.style.display = "block";
+    }
+
+    function distributeEqualProbabilities(count) {
+      if (count <= 0) return [];
+      const base = Math.floor((10000 / count)) / 100;
+      const probs = new Array(count).fill(base);
+      const usedBeforeLast = base * (count - 1);
+      probs[count - 1] = Number((100 - usedBeforeLast).toFixed(2));
+      return probs;
+    }
+
+    async function loadKalshiEvent() {
+      const ticker = extractEventTicker(kalshiInputEl.value);
+      if (!ticker) {
+        setStatus("Enter a Kalshi URL or event ticker first.", "error");
+        return;
+      }
+      kalshiInputEl.value = ticker;
+
+      clearMarketBanner();
+      setStatus(`Loading Kalshi event ${ticker}...`, "");
+      loadKalshiBtn.disabled = true;
+
+      try {
+        const endpoint = `https://api.elections.kalshi.com/trade-api/v2/events/${encodeURIComponent(ticker)}?with_nested_markets=true`;
+        const response = await fetch(endpoint, {
+          method: "GET",
+          headers: { Accept: "application/json" }
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const payload = await response.json();
+        const eventData = payload?.event;
+        if (!eventData) {
+          throw new Error("Missing event payload");
+        }
+
+        const markets = Array.isArray(eventData.markets) ? eventData.markets : (Array.isArray(payload.markets) ? payload.markets : []);
+        if (!markets.length) {
+          throw new Error("No markets in event response");
+        }
+
+        const rows = [];
+        for (const market of markets) {
+          const team = String(market?.no_sub_title || market?.subtitle || market?.title || market?.ticker || "").trim();
+          const noPrice = Number(market?.no_bid_dollars);
+          if (!team) continue;
+          if (!Number.isFinite(noPrice) || noPrice <= 0 || noPrice >= 1) continue;
+          rows.push({ team, noPrice });
+        }
+
+        if (!rows.length) {
+          throw new Error("No usable markets with no_sub_title and no_bid_dollars in (0,1)");
+        }
+
+        const probs = distributeEqualProbabilities(rows.length);
+        rowsEl.innerHTML = "";
+        rows.forEach((row, idx) => {
+          addRow({
+            team: row.team,
+            probPct: probs[idx],
+            noPrice: row.noPrice,
+            shares: 0
+          });
+        });
+
+        const title = String(eventData.title || eventData.sub_title || ticker);
+        marketTitleEl.textContent = `Loaded Event: ${title} (${ticker})`;
+        if (eventData.mutually_exclusive !== true) {
+          showMarketWarning("Warning: event.mutually_exclusive is not true. Calculator still loaded markets.");
+        }
+
+        setStatus(`Loaded ${rows.length} markets from Kalshi event ${ticker}. Update probabilities before betting.`, "ok");
+        recalculate();
+      } catch (err) {
+        const message = err && err.message ? err.message : "Unknown error";
+        setStatus(`Failed to load Kalshi event: ${message}`, "error");
+      } finally {
+        loadKalshiBtn.disabled = false;
+      }
     }
 
     function parseRows() {
@@ -467,43 +626,59 @@ Then apply your fraction f:
       return total;
     }
 
-    function solveIncrementalDelta(teams, wealth, k) {
+    function solveTargetTotalShares(teams, wealth, k) {
+      const currentShares = teams[k].shares;
       const nk = teams[k].noPrice;
+      const baseWealth = [];
 
-      if (!Number.isFinite(wealth[k]) || wealth[k] <= 0) {
-        return { deltaFull: 0, reason: "W_k must be > 0" };
+      for (let s = 0; s < teams.length; s += 1) {
+        const r = s === k ? -nk : (1 - nk);
+        baseWealth.push(wealth[s] - currentShares * r);
       }
 
-      for (let s = 0; s < wealth.length; s += 1) {
-        if (!Number.isFinite(wealth[s]) || wealth[s] <= 0) {
-          return { deltaFull: 0, reason: "All W_s must be > 0" };
+      function derivativeTotal(x) {
+        let total = -teams[k].p * nk / (baseWealth[k] - nk * x);
+        for (let s = 0; s < teams.length; s += 1) {
+          if (s === k) continue;
+          total += teams[s].p * (1 - nk) / (baseWealth[s] + (1 - nk) * x);
+        }
+        return total;
+      }
+
+      if (!Number.isFinite(baseWealth[k]) || baseWealth[k] <= 0) {
+        return { targetFull: 0, reason: "W_k base must be > 0" };
+      }
+
+      for (let s = 0; s < baseWealth.length; s += 1) {
+        if (!Number.isFinite(baseWealth[s]) || baseWealth[s] <= 0) {
+          return { targetFull: 0, reason: "All base W_s must be > 0" };
         }
       }
 
-      const d0 = derivativeDelta(teams, wealth, k, 0);
+      const d0 = derivativeTotal(0);
       if (!Number.isFinite(d0) || d0 <= 0) {
-        return { deltaFull: 0, reason: "No positive Kelly edge at dq=0" };
+        return { targetFull: 0, reason: "No positive Kelly edge at x=0" };
       }
 
-      let high = (wealth[k] / nk) * 0.999999;
+      let high = (baseWealth[k] / nk) * 0.999999;
       if (!Number.isFinite(high) || high <= 0) {
-        return { deltaFull: 0, reason: "No feasible upper bound" };
+        return { targetFull: 0, reason: "No feasible upper bound" };
       }
 
-      let dHigh = derivativeDelta(teams, wealth, k, high);
+      let dHigh = derivativeTotal(high);
       if (!Number.isFinite(dHigh)) {
         high *= 0.5;
-        dHigh = derivativeDelta(teams, wealth, k, high);
+        dHigh = derivativeTotal(high);
       }
 
       if (!Number.isFinite(dHigh)) {
-        return { deltaFull: 0, reason: "Numerical instability" };
+        return { targetFull: 0, reason: "Numerical instability" };
       }
 
       let low = 0;
       for (let iter = 0; iter < 80; iter += 1) {
         const mid = 0.5 * (low + high);
-        const dMid = derivativeDelta(teams, wealth, k, mid);
+        const dMid = derivativeTotal(mid);
         if (!Number.isFinite(dMid)) {
           high = mid;
           continue;
@@ -515,7 +690,7 @@ Then apply your fraction f:
         }
       }
 
-      return { deltaFull: 0.5 * (low + high), reason: "ok" };
+      return { targetFull: 0.5 * (low + high), reason: "ok" };
     }
 
     function wealthAfterDelta(teams, wealth, k, dq) {
@@ -639,10 +814,11 @@ Then apply your fraction f:
 
       for (let k = 0; k < teams.length; k += 1) {
         const ev = 1 - teams[k].p - teams[k].noPrice;
-        const res = solveIncrementalDelta(teams, wealth, k);
-        const deltaFull = blocked || ev <= 0 ? 0 : res.deltaFull;
-        const deltaFrac = fraction * deltaFull;
-        const bidShares = Math.max(0, Math.round(deltaFrac));
+        const res = solveTargetTotalShares(teams, wealth, k);
+        const fullTargetShares = blocked || ev <= 0 ? 0 : res.targetFull;
+        const fractionalTargetShares = fraction * fullTargetShares;
+        const rawBidShares = fractionalTargetShares - teams[k].shares;
+        const bidShares = Math.max(0, Math.round(rawBidShares));
         const nextWealth = wealthAfterDelta(teams, wealth, k, bidShares);
         const plIfYes = wealth[k] - bankroll;
         const plVector = nextWealth.map((w) => w - bankroll);
@@ -674,7 +850,7 @@ Then apply your fraction f:
 
       setStatus(
         `Valid input. Worst current state is ${teams[worstIdx].team} at ${formatCurrency(minWealth - bankroll)}. ` +
-        `Bids are rounded to full shares and non-positive EV rows are forced to 0.`,
+        `Bids now move toward a single QK target (not repeated QK on remaining size), and non-positive EV rows are forced to 0.`,
         "ok"
       );
     }
