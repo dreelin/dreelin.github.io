@@ -307,6 +307,33 @@
       cursor: grabbing;
     }
 
+    #floatingRecalc {
+      display: none;
+      position: fixed;
+      top: 18px;
+      right: 18px;
+      z-index: 100;
+      padding: 10px 18px;
+      font: 600 0.95rem/1 "Space Grotesk", sans-serif;
+      background: var(--accent-2);
+      color: #fff;
+      border: 2px solid #d97706;
+      border-radius: 12px;
+      cursor: pointer;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+
+    #floatingRecalc:hover {
+      transform: translateY(-1px);
+      box-shadow: 0 6px 20px rgba(0,0,0,0.22);
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.8; }
+    }
+
     @media (max-width: 640px) {
       body {
         padding: 12px;
@@ -320,6 +347,7 @@
   </style>
 </head>
 <body>
+  <button id="floatingRecalc" type="button">Recalculate Needed — Process Now</button>
   <main class="wrap">
     <section class="card">
       <h1>Mutually Exclusive NO Bet Calculator</h1>
@@ -479,6 +507,7 @@ Then apply your fraction f:
     });
 
     document.getElementById("recalcBtn").addEventListener("click", recalculate);
+    document.getElementById("floatingRecalc").addEventListener("click", recalculate);
     document.getElementById("openUrlBtn").addEventListener("click", openApiUrl);
     document.getElementById("devigBtn").addEventListener("click", devigAndLoad);
     document.getElementById("clearBtn").addEventListener("click", () => {
@@ -804,6 +833,10 @@ Then apply your fraction f:
           if (sr.fairValue != null) {
             match.tr.querySelector(".probPct").value = (sr.fairValue * 100).toFixed(2);
           }
+          /* Copy devigger URL to Kalshi team name so lookup works */
+          if (deviggerUrls[sr.team] && match.team !== sr.team) {
+            deviggerUrls[match.team] = deviggerUrls[sr.team];
+          }
           teamSources[match.team] = "both";
           match.tr.dataset.source = "both";
         } else {
@@ -1011,8 +1044,11 @@ Then apply your fraction f:
       teamSources[tName] = "both";
       target.dataset.source = "both";
 
-      /* Remove dragged row */
+      /* Remove dragged row — copy devigger URL to target name */
       const dName = dTeam.value.trim();
+      if (deviggerUrls[dName] && !deviggerUrls[tName]) {
+        deviggerUrls[tName] = deviggerUrls[dName];
+      }
       delete teamSources[dName];
       dragged.remove();
       draggedRow = null;
@@ -1051,9 +1087,13 @@ Then apply your fraction f:
     }
 
     [bankrollEl, kellyFractionEl, probModeEl].forEach((el) => {
-      el.addEventListener("input", recalculate);
-      el.addEventListener("change", recalculate);
+      el.addEventListener("input", markDirty);
+      el.addEventListener("change", markDirty);
     });
+
+    function markDirty() {
+      document.getElementById("floatingRecalc").style.display = "block";
+    }
 
     function addRow(data) {
       const tr = document.createElement("tr");
@@ -1069,14 +1109,14 @@ Then apply your fraction f:
       `;
 
       tr.querySelectorAll("input").forEach((input) => {
-        input.addEventListener("input", recalculate);
-        input.addEventListener("change", recalculate);
+        input.addEventListener("input", markDirty);
+        input.addEventListener("change", markDirty);
       });
 
       tr.querySelector(".deleteBtn").addEventListener("click", () => {
         tr.remove();
         updateTeamCount();
-        recalculate();
+        markDirty();
       });
 
       rowsEl.appendChild(tr);
@@ -1338,6 +1378,7 @@ Then apply your fraction f:
     }
 
     function recalculate() {
+      document.getElementById("floatingRecalc").style.display = "none";
       const bankroll = Number(bankrollEl.value);
       const fraction = Number(kellyFractionEl.value);
       const probMode = probModeEl.value;
