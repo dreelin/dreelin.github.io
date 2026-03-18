@@ -284,6 +284,11 @@
       color: #92400e;
     }
 
+    .flag-matched {
+      background: #d1fae5;
+      color: #065f46;
+    }
+
     @media (max-width: 640px) {
       body {
         padding: 12px;
@@ -346,6 +351,7 @@
       <div class="btn-row">
         <button id="addRowBtn" type="button" class="btn-warm">Add Team</button>
         <button id="sampleBtn" type="button">Load Sample</button>
+        <button id="clearBtn" type="button" style="background:#fff1f2; border-color:#fca5a5; color:var(--danger);">Clear All</button>
         <button id="recalcBtn" type="button" class="btn-primary">Recalculate</button>
       </div>
       <div id="status" class="status">Waiting for input.</div>
@@ -454,6 +460,15 @@ Then apply your fraction f:
     document.getElementById("recalcBtn").addEventListener("click", recalculate);
     document.getElementById("openUrlBtn").addEventListener("click", openApiUrl);
     document.getElementById("devigBtn").addEventListener("click", devigAndLoad);
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      rowsEl.innerHTML = "";
+      teamSources = {};
+      deviggerUrls = {};
+      clearMarketBanner();
+      summaryTableEl.innerHTML = "";
+      document.getElementById("portfolioSummary").innerHTML = "";
+      setStatus("Cleared all teams.", "ok");
+    });
 
     /* Auto-parse Kalshi JSON on paste / input */
     jsonPasteEl.addEventListener("input", () => {
@@ -630,10 +645,13 @@ Then apply your fraction f:
           /* Fresh load from sharp only */
           clearMarketBanner();
           rowsEl.innerHTML = "";
+          teamSources = {};
           results.forEach(r => {
             const probPct = r.fairValue != null ? (r.fairValue * 100).toFixed(2) : "";
-            addRow({ team: r.team, probPct, noPrice: "", shares: 0 });
+            addRow({ team: r.team, probPct, noPrice: "", shares: 0, source: "sharp" });
+            teamSources[r.team] = "sharp";
           });
+          updateSourceFlags();
         }
 
         devigStatusEl.textContent = `Done — ${results.length} teams devigged.`;
@@ -682,6 +700,7 @@ Then apply your fraction f:
         const probs = distributeEqualProbabilities(kalshiRows.length);
         clearMarketBanner();
         rowsEl.innerHTML = "";
+        teamSources = {};
         kalshiRows.forEach((row, idx) => {
           addRow({ team: row.team, probPct: probs[idx], noPrice: row.noPrice, shares: 0 });
         });
@@ -697,8 +716,40 @@ Then apply your fraction f:
 
     /* ── Merge logic ── */
 
+    /* Source tracking: team name → "sharp" | "kalshi" | "both" */
+    let teamSources = {};
+
     function normalizeTeamName(name) {
-      return name.toLowerCase().replace(/[^a-z0-9]/g, "");
+      let n = name.toLowerCase().trim();
+      /* Expand common abbreviations */
+      const abbrevs = [
+        [/\bst\b\.?/g, "state"],
+        [/\bmt\b\.?/g, "mount"],
+        [/\bft\b\.?/g, "fort"],
+        [/\bn\b\.?\s*/g, "north "],
+        [/\bs\b\.?\s*/g, "south "],
+        [/\be\b\.?\s*/g, "east "],
+        [/\bw\b\.?\s*/g, "west "],
+        [/\b\(fl\)/g, "florida"],
+        [/\b\(oh\)/g, "ohio"],
+        [/\b\(pa\)/g, "pennsylvania"],
+        [/\b\(ny\)/g, "newyork"],
+        [/\b\(tx\)/g, "texas"],
+        [/\b\(ca\)/g, "california"],
+        [/\bfl\b/g, "florida"],
+        [/\buniv\.?\b/g, "university"],
+      ];
+      for (const [re, rep] of abbrevs) n = n.replace(re, rep);
+      return n.replace(/[^a-z0-9]/g, "");
+    }
+
+    function findMatch(norm, existing, matched) {
+      /* Exact normalized match first */
+      let m = existing.find(e => e.norm === norm && !matched.has(e));
+      if (m) return m;
+      /* Substring: one contains the other (handles "UConn" vs "Connecticut") */
+      m = existing.find(e => !matched.has(e) && (e.norm.includes(norm) || norm.includes(e.norm)) && Math.min(norm.length, e.norm.length) >= 4);
+      return m || null;
     }
 
     function mergeSharpIntoExisting(sharpResults) {
@@ -715,27 +766,39 @@ Then apply your fraction f:
 
       for (const sr of sharpResults) {
         const norm = normalizeTeamName(sr.team);
-        const match = existing.find(e => e.norm === norm && !matched.has(e.norm));
+        const match = findMatch(norm, existing, matched);
         if (match) {
-          matched.add(match.norm);
+          matched.add(match);
           /* Update probability from fair value */
           if (sr.fairValue != null) {
             match.tr.querySelector(".probPct").value = (sr.fairValue * 100).toFixed(2);
           }
+          teamSources[match.team] = "both";
+          match.tr.dataset.source = "both";
         } else {
           unmatched.push(sr);
+        }
+      }
+
+      /* Mark unmatched Kalshi rows */
+      for (const e of existing) {
+        if (!matched.has(e)) {
+          teamSources[e.team] = "kalshi";
+          e.tr.dataset.source = "kalshi";
         }
       }
 
       /* Add unmatched sharp teams as new rows (no Kalshi price) */
       for (const sr of unmatched) {
         const probPct = sr.fairValue != null ? (sr.fairValue * 100).toFixed(2) : "";
-        addRow({ team: sr.team, probPct, noPrice: "", shares: 0 });
+        addRow({ team: sr.team, probPct, noPrice: "", shares: 0, source: "sharp" });
+        teamSources[sr.team] = "sharp";
       }
 
       if (unmatched.length > 0) {
         showMarketWarning(`${unmatched.length} sharp team(s) had no Kalshi match: ${unmatched.map(u => u.team).join(", ")}`);
       }
+      updateSourceFlags();
     }
 
     function mergeKalshiIntoExisting(kalshiRows) {
@@ -752,24 +815,66 @@ Then apply your fraction f:
 
       for (const kr of kalshiRows) {
         const norm = normalizeTeamName(kr.team);
-        const match = existing.find(e => e.norm === norm && !matched.has(e.norm));
+        const match = findMatch(norm, existing, matched);
         if (match) {
-          matched.add(match.norm);
+          matched.add(match);
           /* Fill in NO price from Kalshi */
           match.tr.querySelector(".noPrice").value = kr.noPrice;
+          teamSources[match.team] = "both";
+          match.tr.dataset.source = "both";
         } else {
           unmatched.push(kr);
         }
       }
 
-      /* Add unmatched Kalshi teams as new rows (no fair value) */
-      const probs = distributeEqualProbabilities(unmatched.length);
-      for (let i = 0; i < unmatched.length; i += 1) {
-        addRow({ team: unmatched[i].team, probPct: probs[i], noPrice: unmatched[i].noPrice, shares: 0 });
+      /* Mark unmatched sharp rows */
+      for (const e of existing) {
+        if (!matched.has(e)) {
+          teamSources[e.team] = "sharp";
+          e.tr.dataset.source = "sharp";
+        }
+      }
+
+      /* Add unmatched Kalshi teams as new rows (no fair value, blank prob) */
+      for (const kr of unmatched) {
+        addRow({ team: kr.team, probPct: "", noPrice: kr.noPrice, shares: 0, source: "kalshi" });
+        teamSources[kr.team] = "kalshi";
       }
 
       if (unmatched.length > 0) {
         showMarketWarning(`${unmatched.length} Kalshi team(s) had no sharp match: ${unmatched.map(u => u.team).join(", ")}`);
+      }
+      updateSourceFlags();
+    }
+
+    function updateSourceFlags() {
+      for (const tr of rowsEl.querySelectorAll("tr")) {
+        /* Remove any existing flag */
+        const old = tr.querySelector(".source-flag");
+        if (old) old.remove();
+
+        const teamInput = tr.querySelector(".team");
+        const team = teamInput.value.trim();
+        const src = tr.dataset.source || teamSources[team] || "";
+        if (!src) continue;
+
+        const td = teamInput.closest("td");
+        const flag = document.createElement("span");
+        flag.className = "source-flag";
+        if (src === "both") {
+          flag.classList.add("flag-matched");
+          flag.textContent = "\u2713";
+          flag.title = "Matched in both Sharp and Kalshi";
+        } else if (src === "sharp") {
+          flag.classList.add("flag-sharp-only");
+          flag.textContent = "Sharp only";
+          flag.title = "No Kalshi market found";
+        } else if (src === "kalshi") {
+          flag.classList.add("flag-kalshi-only");
+          flag.textContent = "Kalshi only";
+          flag.title = "No sharp odds found";
+        }
+        td.appendChild(flag);
       }
     }
 
@@ -780,6 +885,7 @@ Then apply your fraction f:
 
     function addRow(data) {
       const tr = document.createElement("tr");
+      if (data.source) tr.dataset.source = data.source;
       tr.innerHTML = `
         <td><input type="text" class="team" value="${escapeAttr(data.team ?? "")}" placeholder="Team" /></td>
         <td><input type="number" class="probPct prob-input" min="0" step="0.01" value="${escapeAttr(data.probPct ?? "")}" /></td>
@@ -852,15 +958,24 @@ Then apply your fraction f:
 
       rows.forEach((tr, idx) => {
         const team = tr.querySelector(".team").value.trim() || `Team ${idx + 1}`;
-        const probPct = Number(tr.querySelector(".probPct").value);
-        const noPrice = Number(tr.querySelector(".noPrice").value);
+        const probPctVal = tr.querySelector(".probPct").value;
+        const noPriceVal = tr.querySelector(".noPrice").value;
+        const probPct = Number(probPctVal);
+        const noPrice = Number(noPriceVal);
         const shares = Number(tr.querySelector(".shares").value || 0);
+        const source = tr.dataset.source || teamSources[team] || "both";
 
-        if (!Number.isFinite(probPct) || probPct < 0) {
-          errors.push(`${team}: probability must be >= 0`);
+        /* Skip rows missing critical data from their incomplete source */
+        const hasProb = probPctVal !== "" && Number.isFinite(probPct) && probPct >= 0;
+        const hasPrice = noPriceVal !== "" && Number.isFinite(noPrice) && noPrice > 0 && noPrice < 1;
+
+        if (!hasPrice) {
+          /* Sharp-only or manually incomplete — skip from optimizer */
+          return;
         }
-        if (!Number.isFinite(noPrice) || noPrice <= 0 || noPrice >= 1) {
-          errors.push(`${team}: NO price must be in (0, 1)`);
+        if (!hasProb) {
+          /* Kalshi-only — skip from optimizer */
+          return;
         }
         if (!Number.isFinite(shares) || shares < 0) {
           errors.push(`${team}: shares must be >= 0`);
@@ -872,6 +987,7 @@ Then apply your fraction f:
           p: probPct / 100,
           noPrice,
           shares,
+          source,
           evCell: tr.querySelector(".evCell"),
           iqkCell: tr.querySelector(".iqkCell")
         });
@@ -1059,8 +1175,11 @@ Then apply your fraction f:
       }
 
       const { teams, errors } = parseRows();
+      const totalTableRows = rowsEl.querySelectorAll("tr").length;
+      const skipped = totalTableRows - teams.length;
       if (teams.length < 2) {
-        setStatus("Add at least 2 teams (or team groups like Field).", "error");
+        const skipNote = skipped > 0 ? ` (${skipped} row(s) skipped — missing price or probability)` : "";
+        setStatus(`Need at least 2 complete teams.${skipNote}`, "error");
         return;
       }
       if (errors.length) {
@@ -1140,9 +1259,13 @@ Then apply your fraction f:
         const teamHtml = devUrl
           ? `<a href="${escapeHtml(devUrl)}" target="_blank" rel="noopener" class="team-link">${escapeHtml(teams[k].team)}</a>`
           : escapeHtml(teams[k].team);
+        const src = teams[k].source || "both";
+        const flagHtml = src === "both" ? '<span class="source-flag flag-matched" title="Matched">\u2713</span>'
+          : src === "sharp" ? '<span class="source-flag flag-sharp-only">Sharp only</span>'
+          : src === "kalshi" ? '<span class="source-flag flag-kalshi-only">Kalshi only</span>' : '';
         const tr = document.createElement("tr");
         tr.innerHTML = `
-          <td>${teamHtml}</td>
+          <td>${teamHtml}${flagHtml}</td>
           <td class="mono">${formatNum(teams[k].p * 100, 2)}%</td>
           <td class="mono ${plClass}">${formatCurrency(plIfYes)}</td>
           <td class="mono ${ev > 0 ? "pos" : (ev < 0 ? "neg" : "neutral")}">${formatPct(ev, 2)}</td>
@@ -1165,9 +1288,10 @@ Then apply your fraction f:
       const arbNote = noSum < teams.length - 1
         ? ` NO prices sum to ${formatNum(noSum, 2)} < ${teams.length - 1} \u2014 arb exists, budget binds at full Kelly.`
         : "";
+      const skipNote = skipped > 0 ? ` ${skipped} incomplete row(s) excluded.` : "";
       setStatus(
         `Worst current state: ${teams[worstIdx].team} at ${formatCurrency(minWealth - bankroll)}. ` +
-        `Bid outlay: ${formatCurrency(-totalCost).replace("+", "")}.${arbNote}`,
+        `Bid outlay: ${formatCurrency(-totalCost).replace("+", "")}.${arbNote}${skipNote}`,
         "ok"
       );
     }
